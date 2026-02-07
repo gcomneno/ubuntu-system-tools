@@ -64,7 +64,7 @@ exec > >(tee -a "$LOG") 2>&1
 echo "=== WHO-USES $(date -Is) ==="
 echo "CMD:  $CMD"
 echo "TERM: $TERM"
-if [[ "" == "0" ]]; then
+if [[ "$SUMMARY" == "0" ]]; then
   echo "Saved log: "
 fi
 echo
@@ -82,7 +82,7 @@ rg_scan_projects() {
   fi
 
   echo "== Projects: scan in PROJECTS_DIR =="
-  if [[ "" == "0" ]]; then
+  if [[ "$SUMMARY" == "0" ]]; then
   echo "DIR: "
 fi
   echo
