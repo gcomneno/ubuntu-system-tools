@@ -75,3 +75,40 @@ If you are looking for an automation framework, this is not it.
 Stable, intentionally small, and evolving slowly.
 
 Contributions are welcome only if they preserve the safety and minimalism principles.
+
+## JSON output (v1)
+
+`who-uses scan <term> --json` prints **JSON only** (no logs, no human text).
+
+Security guarantees:
+- **No absolute paths**
+- **No matched text** (only line/column)
+- **Deterministic output** (stable ordering)
+- **Projects-only** (system scan disabled in JSON mode)
+
+Exit codes in `--json` mode:
+- `0` = no hits
+- `1` = hits found
+- `2` = operational error (JSON error object printed)
+
+Schema (v1):
+```json
+- `schema`: string (`who-uses-json-v1`)
+- `cmd`: string
+- `term`: string
+- `options`:
+  - `deps_only`: boolean
+  - `include_venv`: boolean
+  - `projects_only`: boolean (always `true` in JSON mode)
+- `results[]`:
+  - `project`: string (relative to `PROJECTS_DIR`, or `"."` if at root)
+  - `files[]`:
+    - `path`: string (relative to the project)
+    - `matches[]`:
+      - `line`: number (1-based)
+      - `column`: number (1-based)
+- `summary`:
+  - `projects_with_hits`: number
+  - `files_with_hits`: number
+  - `total_matches`: number
+```

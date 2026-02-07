@@ -9,7 +9,7 @@ usage() {
 who-uses: scan projects + system to find references to a term (safe, read-only)
 
 Usage:
-  who-uses scan <term> [--include-venv] [--deps-only] [--summary] [--fail-on-hit] [--no-system|--projects-only] [--no-projects]
+  who-uses scan <term> [--include-venv] [--deps-only] [--summary] [--json] [--fail-on-hit] [--no-system|--projects-only] [--no-projects]
 
 Environment (optional):
   PROJECTS_DIR  default: $HOME/Progetti
@@ -17,7 +17,8 @@ Environment (optional):
   LOG_DIR       default: $TOWER_BASE/tower/logs
 
 Exit codes:
-  0 = ok (scan completed)
+  0 = ok (scan completed / no hits in --json)
+  1 = hits found (only in --json or --fail-on-hit)
   2 = usage/operational error
 USAGE
 }
@@ -35,6 +36,7 @@ shift 2 2>/dev/null || true
 INCLUDE_VENV=0
 DEPS_ONLY=0
 SUMMARY=0
+JSON=0
 FAIL_ON_HIT=0
 DO_SYSTEM=1
 DO_PROJECTS=1
@@ -47,11 +49,159 @@ while [[ $# -gt 0 ]]; do
     --no-projects) DO_PROJECTS=0; shift;;
     --deps-only) DEPS_ONLY=1; shift;;
     --summary) SUMMARY=1; shift;;
+    --json) JSON=1; shift;;
     --fail-on-hit) FAIL_ON_HIT=1; shift;;
     -h|--help) usage; exit 0;;
     *) die "argomento sconosciuto: $1";;
   esac
 done
+
+json_fail() {
+  # JSON-only error, exit 2 (no human text)
+  local msg="${1:-operational error}"
+  need_cmd python3
+  MSG="$msg" python3 - <<'PY'
+import json, os
+print(json.dumps({"error": os.environ.get("MSG","operational error")}, sort_keys=True))
+PY
+  exit 2
+}
+
+json_mode_main() {
+  # JSON mode: summary-only, sanitized, deterministic.
+  # No logs, no tee, no system scan.
+  need_cmd rg
+  need_cmd python3
+
+  local projects_dir="${PROJECTS_DIR:-$HOME/Progetti}"
+  [[ -d "$projects_dir" ]] || json_fail "PROJECTS_DIR non valido"
+
+  local -a EXCL
+  EXCL=(-g'!**/__pycache__/**' -g'!**/.mypy_cache/**' -g'!**/.pytest_cache/**'
+        -g'!**/node_modules/**' -g'!**/dist/**' -g'!**/build/**')
+  if [[ "$INCLUDE_VENV" == "0" ]]; then
+    EXCL+=(-g'!.venv/**' -g'!**/.venv/**')
+  fi
+
+  local -a DEPS_GLOBS
+  DEPS_GLOBS=(-g'pyproject.toml' -g'requirements*.txt' -g'poetry.lock' -g'Pipfile*' -g'environment.yml'
+              -g'package*.json' -g'yarn.lock')
+
+  # JSON mode disables system scan by design.
+  DO_SYSTEM=0
+
+  # Store reducer code in a variable (avoid heredoc stealing piped stdin)
+  local PYCODE
+  PYCODE="$(
+    cat <<'PY'
+import json, os, sys
+
+cmd = os.environ.get("CMD","")
+term = os.environ.get("TERM","")
+deps_only = os.environ.get("DEPS_ONLY","0") == "1"
+include_venv = os.environ.get("INCLUDE_VENV","0") == "1"
+
+by_proj = {}   # proj -> file -> [{line,column}]
+total_matches = 0
+
+def project_of(relpath: str) -> str:
+    relpath = relpath.lstrip("./")
+    return relpath.split("/", 1)[0] if "/" in relpath else "."
+
+def file_in_project(relpath: str, proj: str) -> str:
+    relpath = relpath.lstrip("./")
+    if proj == ".":
+        return relpath
+    prefix = proj + "/"
+    return relpath[len(prefix):] if relpath.startswith(prefix) else relpath
+
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    try:
+        ev = json.loads(line)
+    except Exception:
+        print(json.dumps({"error":"invalid rg json"}, sort_keys=True))
+        sys.exit(2)
+
+    if ev.get("type") != "match":
+        continue
+
+    data = ev.get("data", {})
+    relpath = (data.get("path", {}) or {}).get("text", "")
+    if not relpath:
+        continue
+
+    # Defensive: reject absolute paths (shouldn't happen when running from projects_dir).
+    if relpath.startswith("/"):
+        print(json.dumps({"error":"absolute path detected"}, sort_keys=True))
+        sys.exit(2)
+
+    proj = project_of(relpath)
+    fpath = file_in_project(relpath, proj)
+    ln = int(data.get("line_number", 0) or 0)
+
+    subs = data.get("submatches", []) or []
+    for sm in subs:
+        try:
+            col = int(sm.get("start", 0)) + 1  # 1-based column
+        except Exception:
+            col = 1
+        by_proj.setdefault(proj, {}).setdefault(fpath, []).append({"line": ln, "column": col})
+        total_matches += 1
+
+# Deterministic ordering
+results = []
+files_with_hits = 0
+for proj in sorted(by_proj.keys()):
+    files = []
+    for fpath in sorted(by_proj[proj].keys()):
+        matches = by_proj[proj][fpath]
+        matches.sort(key=lambda m: (m["line"], m["column"]))
+        files.append({"path": fpath, "matches": matches})
+        files_with_hits += 1
+    results.append({"project": proj, "files": files})
+
+out = {
+  "schema": "who-uses-json-v1",
+  "cmd": cmd,
+  "term": term,
+  "options": {
+    "deps_only": deps_only,
+    "include_venv": include_venv,
+    "projects_only": True,
+  },
+  "results": results,
+  "summary": {
+    "projects_with_hits": len(by_proj),
+    "files_with_hits": files_with_hits,
+    "total_matches": total_matches,
+  },
+}
+print(json.dumps(out, sort_keys=True, separators=(",", ":")))
+sys.exit(1 if total_matches > 0 else 0)
+PY
+  )"
+
+  # Run rg from projects_dir so paths are relative (sanitized).
+  # Use ripgrep native JSON and reduce to our v1 schema (line/column only).
+  (
+    cd "$projects_dir" || exit 2
+    if [[ "$DEPS_ONLY" == "1" ]]; then
+      rg --json -S --hidden --no-follow "${EXCL[@]}" "${DEPS_GLOBS[@]}" -- "$TERM" . 2>/dev/null || true
+    else
+      rg --json -S --hidden --no-follow "${EXCL[@]}" -- "$TERM" . 2>/dev/null || true
+    fi
+  ) | CMD="$CMD" TERM="$TERM" DEPS_ONLY="$DEPS_ONLY" INCLUDE_VENV="$INCLUDE_VENV" \
+      python3 -c "$PYCODE"
+}
+
+# JSON early branch (separate execution path)
+if [[ "$JSON" == "1" ]]; then
+  SUMMARY=1
+  json_mode_main
+fi
 
 PROJECTS_DIR="${PROJECTS_DIR:-$HOME/Progetti}"
 TOWER_BASE="${TOWER_BASE:-$HOME/Documents/tower-notes}"
@@ -85,62 +235,58 @@ rg_scan_projects() {
 
   echo "== Projects: scan in PROJECTS_DIR =="
   if [[ "$SUMMARY" == "0" ]]; then
-  echo "DIR: "
-fi
+    echo "DIR: "
+  fi
   echo
 
   echo "-- deps files hit list --"
-if [[ "$SUMMARY" == "1" ]]; then
-  deps_hits="$(rg -l -S --hidden --no-follow \
-    "${EXCL[@]}" \
-    -g'pyproject.toml' -g'requirements*.txt' -g'poetry.lock' -g'Pipfile*' -g'environment.yml' \
-    -g'package*.json' -g'yarn.lock' \
-    "$TERM" . 2>/dev/null | sort -u || true)"
-  deps_count="$(printf "%s
-" "$deps_hits" | sed "/^$/d" | wc -l | tr -d " ")"
-  echo "SUMMARY (deps): $deps_count hit(s)"
-  if [[ "$deps_count" != "0" ]]; then HIT=1; fi
-  if [[ "$deps_count" != "0" ]]; then
-    printf "%s
-" "$deps_hits"
+  if [[ "$SUMMARY" == "1" ]]; then
+    deps_hits="$(rg -l -S --hidden --no-follow \
+      "${EXCL[@]}" \
+      -g'pyproject.toml' -g'requirements*.txt' -g'poetry.lock' -g'Pipfile*' -g'environment.yml' \
+      -g'package*.json' -g'yarn.lock' \
+      "$TERM" . 2>/dev/null | sort -u || true)"
+    deps_count="$(printf "%s\n" "$deps_hits" | sed "/^$/d" | wc -l | tr -d " ")"
+    echo "SUMMARY (deps): $deps_count hit(s)"
+    if [[ "$deps_count" != "0" ]]; then HIT=1; fi
+    if [[ "$deps_count" != "0" ]]; then
+      printf "%s\n" "$deps_hits"
+    fi
+  else
+    rg -n -S --hidden --no-follow \
+      "${EXCL[@]}" \
+      -g'pyproject.toml' -g'requirements*.txt' -g'poetry.lock' -g'Pipfile*' -g'environment.yml' \
+      -g'package*.json' -g'yarn.lock' \
+      "$TERM" . || true
   fi
-else
-  rg -n -S --hidden --no-follow \
-    "${EXCL[@]}" \
-    -g'pyproject.toml' -g'requirements*.txt' -g'poetry.lock' -g'Pipfile*' -g'environment.yml' \
-    -g'package*.json' -g'yarn.lock' \
-    "$TERM" . || true
-fi
 
   echo
   if [[ "$DEPS_ONLY" == "0" ]]; then
-  if [[ "$SUMMARY" == "1" ]]; then
-    gen_hits="$(rg -l -S --hidden --no-follow \
-      "${EXCL[@]}" \
-      "$TERM" . 2>/dev/null | sort -u || true)"
-    gen_count="$(printf "%s
-" "$gen_hits" | sed "/^$/d" | wc -l | tr -d " ")"
-    echo
-    echo "SUMMARY (generic): $gen_count file(s) with matches"
-    if [[ "$gen_count" != "0" ]]; then HIT=1; fi
-    if [[ "$gen_count" != "0" ]]; then
-      printf "%s
-" "$gen_hits"
+    if [[ "$SUMMARY" == "1" ]]; then
+      gen_hits="$(rg -l -S --hidden --no-follow \
+        "${EXCL[@]}" \
+        "$TERM" . 2>/dev/null | sort -u || true)"
+      gen_count="$(printf "%s\n" "$gen_hits" | sed "/^$/d" | wc -l | tr -d " ")"
+      echo
+      echo "SUMMARY (generic): $gen_count file(s) with matches"
+      if [[ "$gen_count" != "0" ]]; then HIT=1; fi
+      if [[ "$gen_count" != "0" ]]; then
+        printf "%s\n" "$gen_hits"
+      fi
+      echo
+    else
+      echo
+      echo "-- generic scan (code+configs) --"
+      rg -n -S --hidden --no-follow \
+        "${EXCL[@]}" \
+        "$TERM" . || true
+      echo
     fi
-    echo
   else
     echo
-    echo "-- generic scan (code+configs) --"
-    rg -n -S --hidden --no-follow \
-      "${EXCL[@]}" \
-      "$TERM" . || true
+    echo "(deps-only) Skipping generic scan."
     echo
   fi
-else
-  echo
-  echo "(deps-only) Skipping generic scan."
-  echo
-fi
 }
 
 system_snapshot() {
@@ -150,7 +296,7 @@ system_snapshot() {
 
   echo "== System: PATH binary (best effort) =="
   if command -v "$TERM" >/dev/null 2>&1; then
-    echo "FOUND: $TERM -> $(command -v "$TERM")"
+    echo "FOUND in PATH: $TERM"
   else
     echo "OK: not found in PATH"
   fi
@@ -168,7 +314,6 @@ fi
 if [[ "$DO_SYSTEM" == "1" ]]; then
   system_snapshot || true
 fi
-
 
 # FAIL_ON_HIT non-summary probe (cheap)
 if [[ "$FAIL_ON_HIT" == "1" && "$SUMMARY" == "0" ]]; then
