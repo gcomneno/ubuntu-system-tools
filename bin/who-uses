@@ -9,7 +9,7 @@ usage() {
 who-uses: scan projects + system to find references to a term (safe, read-only)
 
 Usage:
-  who-uses scan <term> [--include-venv] [--deps-only] [--summary] [--no-system|--projects-only] [--no-projects]
+  who-uses scan <term> [--include-venv] [--deps-only] [--summary] [--fail-on-hit] [--no-system|--projects-only] [--no-projects]
 
 Environment (optional):
   PROJECTS_DIR  default: $HOME/Progetti
@@ -35,6 +35,7 @@ shift 2 2>/dev/null || true
 INCLUDE_VENV=0
 DEPS_ONLY=0
 SUMMARY=0
+FAIL_ON_HIT=0
 DO_SYSTEM=1
 DO_PROJECTS=1
 
@@ -46,6 +47,7 @@ while [[ $# -gt 0 ]]; do
     --no-projects) DO_PROJECTS=0; shift;;
     --deps-only) DEPS_ONLY=1; shift;;
     --summary) SUMMARY=1; shift;;
+    --fail-on-hit) FAIL_ON_HIT=1; shift;;
     -h|--help) usage; exit 0;;
     *) die "argomento sconosciuto: $1";;
   esac
@@ -97,6 +99,7 @@ if [[ "$SUMMARY" == "1" ]]; then
   deps_count="$(printf "%s
 " "$deps_hits" | sed "/^$/d" | wc -l | tr -d " ")"
   echo "SUMMARY (deps): $deps_count hit(s)"
+  if [[ "$deps_count" != "0" ]]; then HIT=1; fi
   if [[ "$deps_count" != "0" ]]; then
     printf "%s
 " "$deps_hits"
@@ -119,6 +122,7 @@ fi
 " "$gen_hits" | sed "/^$/d" | wc -l | tr -d " ")"
     echo
     echo "SUMMARY (generic): $gen_count file(s) with matches"
+    if [[ "$gen_count" != "0" ]]; then HIT=1; fi
     if [[ "$gen_count" != "0" ]]; then
       printf "%s
 " "$gen_hits"
@@ -163,6 +167,33 @@ if [[ "$DO_PROJECTS" == "1" ]]; then
 fi
 if [[ "$DO_SYSTEM" == "1" ]]; then
   system_snapshot || true
+fi
+
+
+# FAIL_ON_HIT non-summary probe (cheap)
+if [[ "$FAIL_ON_HIT" == "1" && "$SUMMARY" == "0" ]]; then
+  if [[ "$DO_PROJECTS" == "1" ]]; then
+    # deps probe
+    deps_probe="$(rg -l -S --hidden --no-follow \
+      "${EXCL[@]}" \
+      -g'pyproject.toml' -g'requirements*.txt' -g'poetry.lock' -g'Pipfile*' -g'environment.yml' \
+      -g'package*.json' -g'yarn.lock' \
+      "$TERM" . 2>/dev/null | head -n 1 || true)"
+    if [[ -n "${deps_probe:-}" ]]; then HIT=1; fi
+
+    # generic probe only if enabled
+    if [[ "$DEPS_ONLY" == "0" ]]; then
+      gen_probe="$(rg -l -S --hidden --no-follow \
+        "${EXCL[@]}" \
+        "$TERM" . 2>/dev/null | head -n 1 || true)"
+      if [[ -n "${gen_probe:-}" ]]; then HIT=1; fi
+    fi
+  fi
+fi
+
+# exit semantics
+if [[ "$FAIL_ON_HIT" == "1" && "$HIT" == "1" ]]; then
+  exit 1
 fi
 
 echo
