@@ -1,0 +1,8 @@
+repos:
+  - repo: local
+    hooks:
+      - id: no-leaks
+        name: no-leaks (block obvious personal paths/secrets)
+        entry: tools/no-leaks.sh
+        language: system
+        types: [text]
