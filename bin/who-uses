@@ -9,7 +9,7 @@ usage() {
 who-uses: scan projects + system to find references to a term (safe, read-only)
 
 Usage:
-  who-uses scan <term> [--include-venv] [--no-system] [--no-projects]
+  who-uses scan <term> [--include-venv] [--deps-only] [--summary] [--no-system|--projects-only] [--no-projects]
 
 Environment (optional):
   PROJECTS_DIR  default: $HOME/Progetti
@@ -33,6 +33,8 @@ shift 2 2>/dev/null || true
 [[ -n "${TERM:-}" ]] || { usage; exit 2; }
 
 INCLUDE_VENV=0
+DEPS_ONLY=0
+SUMMARY=0
 DO_SYSTEM=1
 DO_PROJECTS=1
 
@@ -40,7 +42,10 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --include-venv) INCLUDE_VENV=1; shift;;
     --no-system) DO_SYSTEM=0; shift;;
+    --projects-only) DO_SYSTEM=0; shift;;
     --no-projects) DO_PROJECTS=0; shift;;
+    --deps-only) DEPS_ONLY=1; shift;;
+    --summary) SUMMARY=1; shift;;
     -h|--help) usage; exit 0;;
     *) die "argomento sconosciuto: $1";;
   esac
@@ -59,7 +64,9 @@ exec > >(tee -a "$LOG") 2>&1
 echo "=== WHO-USES $(date -Is) ==="
 echo "CMD:  $CMD"
 echo "TERM: $TERM"
-echo "Saved log: $LOG"
+if [[ "" == "0" ]]; then
+  echo "Saved log: "
+fi
 echo
 
 rg_scan_projects() {
@@ -75,22 +82,61 @@ rg_scan_projects() {
   fi
 
   echo "== Projects: scan in PROJECTS_DIR =="
-  echo "DIR: $PROJECTS_DIR"
+  if [[ "" == "0" ]]; then
+  echo "DIR: "
+fi
   echo
 
   echo "-- deps files hit list --"
+if [[ "$SUMMARY" == "1" ]]; then
+  deps_hits="$(rg -l -S --hidden --no-follow \
+    "${EXCL[@]}" \
+    -g'pyproject.toml' -g'requirements*.txt' -g'poetry.lock' -g'Pipfile*' -g'environment.yml' \
+    -g'package*.json' -g'yarn.lock' \
+    "$TERM" . 2>/dev/null | sort -u || true)"
+  deps_count="$(printf "%s
+" "$deps_hits" | sed "/^$/d" | wc -l | tr -d " ")"
+  echo "SUMMARY (deps): $deps_count hit(s)"
+  if [[ "$deps_count" != "0" ]]; then
+    printf "%s
+" "$deps_hits"
+  fi
+else
   rg -n -S --hidden --no-follow \
     "${EXCL[@]}" \
     -g'pyproject.toml' -g'requirements*.txt' -g'poetry.lock' -g'Pipfile*' -g'environment.yml' \
     -g'package*.json' -g'yarn.lock' \
     "$TERM" . || true
+fi
 
   echo
-  echo "-- generic scan (code+configs) --"
-  rg -n -S --hidden --no-follow \
-    "${EXCL[@]}" \
-    "$TERM" . || true
+  if [[ "$DEPS_ONLY" == "0" ]]; then
+  if [[ "$SUMMARY" == "1" ]]; then
+    gen_hits="$(rg -l -S --hidden --no-follow \
+      "${EXCL[@]}" \
+      "$TERM" . 2>/dev/null | sort -u || true)"
+    gen_count="$(printf "%s
+" "$gen_hits" | sed "/^$/d" | wc -l | tr -d " ")"
+    echo
+    echo "SUMMARY (generic): $gen_count file(s) with matches"
+    if [[ "$gen_count" != "0" ]]; then
+      printf "%s
+" "$gen_hits"
+    fi
+    echo
+  else
+    echo
+    echo "-- generic scan (code+configs) --"
+    rg -n -S --hidden --no-follow \
+      "${EXCL[@]}" \
+      "$TERM" . || true
+    echo
+  fi
+else
   echo
+  echo "(deps-only) Skipping generic scan."
+  echo
+fi
 }
 
 system_snapshot() {
