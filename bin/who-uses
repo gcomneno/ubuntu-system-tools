@@ -1,0 +1,119 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+die(){ echo "ERRORE: $*" >&2; exit 2; }
+info(){ echo ">>> $*"; }
+
+usage() {
+  cat <<'USAGE'
+who-uses: scan projects + system to find references to a term (safe, read-only)
+
+Usage:
+  who-uses scan <term> [--include-venv] [--no-system] [--no-projects]
+
+Environment (optional):
+  PROJECTS_DIR  default: $HOME/Progetti
+  TOWER_BASE    default: $HOME/Documents/tower-notes
+  LOG_DIR       default: $TOWER_BASE/tower/logs
+
+Exit codes:
+  0 = ok (scan completed)
+  2 = usage/operational error
+USAGE
+}
+
+need_cmd(){ command -v "$1" >/dev/null 2>&1 || die "comando mancante: $1"; }
+
+CMD="${1:-}"
+TERM="${2:-}"
+shift 2 2>/dev/null || true
+
+[[ -n "$CMD" ]] || { usage; exit 2; }
+[[ "$CMD" == "scan" ]] || { usage; exit 2; }
+[[ -n "${TERM:-}" ]] || { usage; exit 2; }
+
+INCLUDE_VENV=0
+DO_SYSTEM=1
+DO_PROJECTS=1
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --include-venv) INCLUDE_VENV=1; shift;;
+    --no-system) DO_SYSTEM=0; shift;;
+    --no-projects) DO_PROJECTS=0; shift;;
+    -h|--help) usage; exit 0;;
+    *) die "argomento sconosciuto: $1";;
+  esac
+done
+
+PROJECTS_DIR="${PROJECTS_DIR:-$HOME/Progetti}"
+TOWER_BASE="${TOWER_BASE:-$HOME/Documents/tower-notes}"
+LOGDIR="${LOG_DIR:-$TOWER_BASE/tower/logs}"
+mkdir -p "$LOGDIR"
+
+TS="$(date +%F_%H%M%S)"
+TERM_SAFE="$(printf '%s' "$TERM" | tr -cs 'A-Za-z0-9._-' '_' | cut -c1-80)"
+LOG="$LOGDIR/who_uses_${CMD}_${TERM_SAFE}_${TS}.log"
+exec > >(tee -a "$LOG") 2>&1
+
+echo "=== WHO-USES $(date -Is) ==="
+echo "CMD:  $CMD"
+echo "TERM: $TERM"
+echo "Saved log: $LOG"
+echo
+
+rg_scan_projects() {
+  need_cmd rg
+  [[ -d "$PROJECTS_DIR" ]] || die "PROJECTS_DIR non valido: $PROJECTS_DIR"
+  cd "$PROJECTS_DIR"
+
+  EXCL=(-g'!**/__pycache__/**' -g'!**/.mypy_cache/**' -g'!**/.pytest_cache/**'
+        -g'!**/node_modules/**' -g'!**/dist/**' -g'!**/build/**')
+
+  if [[ "$INCLUDE_VENV" == "0" ]]; then
+    EXCL+=(-g'!.venv/**' -g'!**/.venv/**')
+  fi
+
+  echo "== Projects: scan in PROJECTS_DIR =="
+  echo "DIR: $PROJECTS_DIR"
+  echo
+
+  echo "-- deps files hit list --"
+  rg -n -S --hidden --no-follow \
+    "${EXCL[@]}" \
+    -g'pyproject.toml' -g'requirements*.txt' -g'poetry.lock' -g'Pipfile*' -g'environment.yml' \
+    -g'package*.json' -g'yarn.lock' \
+    "$TERM" . || true
+
+  echo
+  echo "-- generic scan (code+configs) --"
+  rg -n -S --hidden --no-follow \
+    "${EXCL[@]}" \
+    "$TERM" . || true
+  echo
+}
+
+system_snapshot() {
+  echo "== System: pip (best effort) =="
+  python3 -m pip list 2>/dev/null | rg -n -i --fixed-strings "$TERM" || echo "OK: niente (pip user/global) o pip non configurato"
+  echo
+
+  echo "== System: PATH binary (best effort) =="
+  if command -v "$TERM" >/dev/null 2>&1; then
+    echo "FOUND: $TERM -> $(command -v "$TERM")"
+  else
+    echo "OK: not found in PATH"
+  fi
+  echo
+
+  echo "== System: systemd units matching term (best effort) =="
+  systemctl --user list-units --all 2>/dev/null | rg -n -i --fixed-strings "$TERM" || true
+  systemctl list-units --all 2>/dev/null | rg -n -i --fixed-strings "$TERM" || true
+  echo
+}
+
+[[ "$DO_PROJECTS" == "1" ]] && rg_scan_projects || true
+[[ "$DO_SYSTEM" == "1" ]] && system_snapshot || true
+
+echo
+echo "Done."
