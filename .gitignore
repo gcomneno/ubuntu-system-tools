@@ -1,0 +1,25 @@
+# logs / artifacts
+tower/logs/
+**/logs/
+*.log
+
+# secrets / tokens
+*.key
+*.pem
+*.gpg
+*.age
+*.env
+.env*
+config*.ini
+secrets*
+credentials*
+id_rsa*
+id_ed25519*
+# python / node junk
+**/.venv/
+**/__pycache__/
+**/.pytest_cache/
+**/.mypy_cache/
+**/node_modules/
+# local user config
+config/config.env
