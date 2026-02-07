@@ -112,8 +112,12 @@ system_snapshot() {
   echo
 }
 
-[[ "$DO_PROJECTS" == "1" ]] && rg_scan_projects || true
-[[ "$DO_SYSTEM" == "1" ]] && system_snapshot || true
+if [[ "$DO_PROJECTS" == "1" ]]; then
+  rg_scan_projects || true
+fi
+if [[ "$DO_SYSTEM" == "1" ]]; then
+  system_snapshot || true
+fi
 
 echo
 echo "Done."
