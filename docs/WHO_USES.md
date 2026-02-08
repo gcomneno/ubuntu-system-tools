@@ -65,10 +65,12 @@ results[]:
         matches[]: { line, column } (1-based)
 summary: { projects_with_hits, files_with_hits, total_matches }
 
-### Note:
-In --json, pattern non valido (regex invalida) o errori di scansione di rg producono un JSON {"error": ...} ed exit code 2.
+### Notes
+- In `--json`, invalid patterns (e.g. invalid regex) or `rg` scan errors return `{"error": ...}` and exit code `2`.
+- `--fixed`: treat `<term>` as a literal string (no regex).
+- `--case-sensitive`: force case-sensitive matching (disables smart-case).
 
 ## Example:
-```
+```bash
 who-uses scan requests --json | python3 -m json.tool
 ```
