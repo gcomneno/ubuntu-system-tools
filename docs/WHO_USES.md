@@ -65,6 +65,9 @@ results[]:
         matches[]: { line, column } (1-based)
 summary: { projects_with_hits, files_with_hits, total_matches }
 
+### Note:
+In --json, pattern non valido (regex invalida) o errori di scansione di rg producono un JSON {"error": ...} ed exit code 2.
+
 ## Example:
 ```
 who-uses scan requests --json | python3 -m json.tool
