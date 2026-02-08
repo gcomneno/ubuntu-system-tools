@@ -186,21 +186,43 @@ PY
 
   # Run rg from projects_dir so paths are relative (sanitized).
   # Use ripgrep native JSON and reduce to our v1 schema (line/column only).
+  # Run rg and preserve its exit code (avoid treating rg errors as "no hits")
+  # Run rg, capture stdout, preserve exit code.
+  # If rg errors (rc=2), emit JSON error and exit 2 (no reducer output).
+  local tmp_out tmp_rc
+  tmp_out="$(mktemp)"
+  tmp_rc="$(mktemp)"
+
   (
     cd "$projects_dir" || exit 2
+    rc=0
     if [[ "$DEPS_ONLY" == "1" ]]; then
-      rg --json -S --hidden --no-follow "${EXCL[@]}" "${DEPS_GLOBS[@]}" -- "$TERM" . 2>/dev/null || true
+      rg --json -S --hidden --no-follow "${EXCL[@]}" "${DEPS_GLOBS[@]}" -- "$TERM" . 2>/dev/null >"$tmp_out" || rc=$?
     else
-      rg --json -S --hidden --no-follow "${EXCL[@]}" -- "$TERM" . 2>/dev/null || true
+      rg --json -S --hidden --no-follow "${EXCL[@]}" -- "$TERM" . 2>/dev/null >"$tmp_out" || rc=$?
     fi
-  ) | CMD="$CMD" TERM="$TERM" DEPS_ONLY="$DEPS_ONLY" INCLUDE_VENV="$INCLUDE_VENV" \
-      python3 -c "$PYCODE"
+    printf '%s' "$rc" >"$tmp_rc"
+  )
+
+  rg_rc="$(cat "$tmp_rc" 2>/dev/null || echo 0)"
+  rm -f "$tmp_rc"
+
+  if [[ "$rg_rc" == "2" ]]; then
+    rm -f "$tmp_out"
+    json_fail "rg error (invalid pattern or scan failure)"
+  fi
+
+  CMD="$CMD" TERM="$TERM" DEPS_ONLY="$DEPS_ONLY" INCLUDE_VENV="$INCLUDE_VENV" \
+    python3 -c "$PYCODE" <"$tmp_out"
+
+  rm -f "$tmp_out"
 }
 
 # JSON early branch (separate execution path)
 if [[ "$JSON" == "1" ]]; then
   SUMMARY=1
   json_mode_main
+  exit $?
 fi
 
 PROJECTS_DIR="${PROJECTS_DIR:-$HOME/Progetti}"
