@@ -9,7 +9,7 @@ usage() {
 who-uses: scan projects + system to find references to a term (safe, read-only)
 
 Usage:
-  who-uses scan <term> [--include-venv] [--deps-only] [--summary] [--json] [--fail-on-hit] [--no-system|--projects-only] [--no-projects]
+  who-uses scan <term> [--include-venv] [--deps-only] [--summary] [--json] [--fixed] [--case-sensitive] [--fail-on-hit] [--no-system|--projects-only] [--no-projects]
 
 Environment (optional):
   PROJECTS_DIR  default: $HOME/Progetti
@@ -37,9 +37,12 @@ INCLUDE_VENV=0
 DEPS_ONLY=0
 SUMMARY=0
 JSON=0
+FIXED=0
+CASE_SENSITIVE=0
 FAIL_ON_HIT=0
 DO_SYSTEM=1
 DO_PROJECTS=1
+HIT=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -50,11 +53,25 @@ while [[ $# -gt 0 ]]; do
     --deps-only) DEPS_ONLY=1; shift;;
     --summary) SUMMARY=1; shift;;
     --json) JSON=1; shift;;
+    --fixed) FIXED=1; shift;;
+    --case-sensitive) CASE_SENSITIVE=1; shift;;
     --fail-on-hit) FAIL_ON_HIT=1; shift;;
     -h|--help) usage; exit 0;;
     *) die "argomento sconosciuto: $1";;
   esac
 done
+
+# Matching flags for rg (shared by human + json project scans).
+# Default: smart-case (-S). With --case-sensitive we force case-sensitive and disable smart-case.
+RG_MATCH=()
+if [[ "$CASE_SENSITIVE" == "1" ]]; then
+  RG_MATCH+=(--case-sensitive)
+else
+  RG_MATCH+=(-S)
+fi
+if [[ "$FIXED" == "1" ]]; then
+  RG_MATCH+=(--fixed-strings)
+fi
 
 json_fail() {
   # JSON-only error, exit 2 (no human text)
@@ -197,9 +214,9 @@ PY
     cd "$projects_dir" || exit 2
     rc=0
     if [[ "$DEPS_ONLY" == "1" ]]; then
-      rg --json -S --hidden --no-follow "${EXCL[@]}" "${DEPS_GLOBS[@]}" -- "$TERM" . 2>/dev/null >"$tmp_out" || rc=$?
+      rg --json "${RG_MATCH[@]}" --hidden --no-follow "${EXCL[@]}" "${DEPS_GLOBS[@]}" -- "$TERM" . 2>/dev/null >"$tmp_out" || rc=$?
     else
-      rg --json -S --hidden --no-follow "${EXCL[@]}" -- "$TERM" . 2>/dev/null >"$tmp_out" || rc=$?
+      rg --json "${RG_MATCH[@]}" --hidden --no-follow "${EXCL[@]}" -- "$TERM" . 2>/dev/null >"$tmp_out" || rc=$?
     fi
     printf '%s' "$rc" >"$tmp_rc"
   )
@@ -263,31 +280,30 @@ rg_scan_projects() {
 
   echo "-- deps files hit list --"
   if [[ "$SUMMARY" == "1" ]]; then
-    deps_hits="$(rg -l -S --hidden --no-follow \
+    deps_hits="$(rg -l "${RG_MATCH[@]}" --hidden --no-follow \
       "${EXCL[@]}" \
       -g'pyproject.toml' -g'requirements*.txt' -g'poetry.lock' -g'Pipfile*' -g'environment.yml' \
       -g'package*.json' -g'yarn.lock' \
-      "$TERM" . 2>/dev/null | sort -u || true)"
-    deps_count="$(printf "%s\n" "$deps_hits" | sed "/^$/d" | wc -l | tr -d " ")"
+      -- "$TERM" . 2>/dev/null | sort -u || true)"    deps_count="$(printf "%s\n" "$deps_hits" | sed "/^$/d" | wc -l | tr -d " ")"
     echo "SUMMARY (deps): $deps_count hit(s)"
     if [[ "$deps_count" != "0" ]]; then HIT=1; fi
     if [[ "$deps_count" != "0" ]]; then
       printf "%s\n" "$deps_hits"
     fi
   else
-    rg -n -S --hidden --no-follow \
+    rg "${RG_MATCH[@]}" --hidden --no-follow \
       "${EXCL[@]}" \
       -g'pyproject.toml' -g'requirements*.txt' -g'poetry.lock' -g'Pipfile*' -g'environment.yml' \
       -g'package*.json' -g'yarn.lock' \
-      "$TERM" . || true
+      -- "$TERM" . || true
   fi
 
   echo
   if [[ "$DEPS_ONLY" == "0" ]]; then
     if [[ "$SUMMARY" == "1" ]]; then
-      gen_hits="$(rg -l -S --hidden --no-follow \
+      gen_hits="$(rg -l "${RG_MATCH[@]}" --hidden --no-follow \
         "${EXCL[@]}" \
-        "$TERM" . 2>/dev/null | sort -u || true)"
+        -- "$TERM" . 2>/dev/null | sort -u || true)"
       gen_count="$(printf "%s\n" "$gen_hits" | sed "/^$/d" | wc -l | tr -d " ")"
       echo
       echo "SUMMARY (generic): $gen_count file(s) with matches"
@@ -299,9 +315,9 @@ rg_scan_projects() {
     else
       echo
       echo "-- generic scan (code+configs) --"
-      rg -n -S --hidden --no-follow \
+      rg "${RG_MATCH[@]}" --hidden --no-follow \
         "${EXCL[@]}" \
-        "$TERM" . || true
+        -- "$TERM" . || true
       echo
     fi
   else
@@ -341,7 +357,7 @@ fi
 if [[ "$FAIL_ON_HIT" == "1" && "$SUMMARY" == "0" ]]; then
   if [[ "$DO_PROJECTS" == "1" ]]; then
     # deps probe
-    deps_probe="$(rg -l -S --hidden --no-follow \
+    deps_probe="$(rg -l "${RG_MATCH[@]}" --hidden --no-follow \
       "${EXCL[@]}" \
       -g'pyproject.toml' -g'requirements*.txt' -g'poetry.lock' -g'Pipfile*' -g'environment.yml' \
       -g'package*.json' -g'yarn.lock' \
@@ -350,7 +366,7 @@ if [[ "$FAIL_ON_HIT" == "1" && "$SUMMARY" == "0" ]]; then
 
     # generic probe only if enabled
     if [[ "$DEPS_ONLY" == "0" ]]; then
-      gen_probe="$(rg -l -S --hidden --no-follow \
+      gen_probe="$(rg -l "${RG_MATCH[@]}" --hidden --no-follow \
         "${EXCL[@]}" \
         "$TERM" . 2>/dev/null | head -n 1 || true)"
       if [[ -n "${gen_probe:-}" ]]; then HIT=1; fi
