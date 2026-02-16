@@ -112,3 +112,12 @@ Schema (v1):
   - `files_with_hits`: number
   - `total_matches`: number
 ```
+
+---
+
+## Security note
+
+This tool is read-only and performs no network activity.  
+Output may contain sensitive local system information (usernames, IP addresses, service names).  
+Review output before sharing publicly.
+
