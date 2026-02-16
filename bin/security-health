@@ -1,25 +1,73 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Policy:
-# - ALLOW_SUDO=1  -> prova root checks non-interattivi
-# - STRICT=1      -> se root checks richiesti ma impossibili/KO, esci con code 2
+usage() {
+  cat <<'USAGE'
+security-health - local security health checks (read-only)
+
+Usage:
+  security-health [options]
+
+Options:
+  --allow-sudo        Enable non-interactive sudo checks (equiv: ALLOW_SUDO=1)
+  --strict            Fail with exit code 2 if root checks are requested but cannot run / fail (equiv: STRICT=1)
+  --since <when>      Journal time window for user/service logs (default: "24 hours ago")
+  -h, --help          Show this help
+
+Environment (compatible):
+  ALLOW_SUDO=0|1
+  STRICT=0|1
+USAGE
+}
+
+# Defaults (env-compatible)
 ALLOW_SUDO="${ALLOW_SUDO:-0}"
 STRICT="${STRICT:-0}"
+SINCE="${SINCE:-24 hours ago}"
+
+# Parse args (CLI overrides env)
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --allow-sudo)
+      ALLOW_SUDO=1
+      shift
+      ;;
+    --strict)
+      STRICT=1
+      shift
+      ;;
+    --since)
+      shift
+      [[ $# -gt 0 ]] || { echo "ERROR: --since requires a value" >&2; exit 2; }
+      SINCE="$1"
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "ERROR: unknown option: $1" >&2
+      echo >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+done
 
 echo "=== SECURITY HEALTHCHECK ==="
 
 echo
-echo ">>> Sudo events (ultime 24h)"
-journalctl _COMM=sudo --since "24 hours ago" --no-pager -n 20 || echo "nessun evento sudo"
+echo ">>> Sudo events (since: $SINCE)"
+journalctl _COMM=sudo --since "$SINCE" --no-pager -n 20 || echo "nessun evento sudo"
 
 echo
-echo ">>> Login / logout (ultime 24h)"
-journalctl -u systemd-logind --since "24 hours ago" --no-pager -n 20 || echo "nessun evento logind"
+echo ">>> Login / logout (since: $SINCE)"
+journalctl -u systemd-logind --since "$SINCE" --no-pager -n 20 || echo "nessun evento logind"
 
 echo
-echo ">>> UFW events (ultime 24h)"
-journalctl -k --since "24 hours ago" --no-pager | grep -i ufw | tail -n 20 || echo "nessun log UFW rilevante"
+echo ">>> UFW events (since: $SINCE)"
+journalctl -k --since "$SINCE" --no-pager | grep -i ufw | tail -n 20 || echo "nessun log UFW rilevante"
 
 echo
 echo ">>> Kernel warnings (ultimo boot)"
@@ -35,7 +83,6 @@ if command -v debsums >/dev/null 2>&1; then
     echo "ROOT_CHECKS=SKIPPED (ALLOW_SUDO=0)"
   else
     if ! sudo -n true 2>/dev/null; then
-      # Unattended-friendly: se STRICT=0 non bloccare tutto
       echo "ROOT_CHECKS=SKIPPED (sudo non disponibile non-interattivo)"
       if [[ "$STRICT" == "1" ]]; then
         echo "ROOT_CHECKS=FAILED (STRICT=1)"
