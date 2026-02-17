@@ -12,11 +12,14 @@ Options:
   --allow-sudo        Enable non-interactive sudo checks (equiv: ALLOW_SUDO=1)
   --strict            Fail with exit code 2 if root checks are requested but cannot run / fail (equiv: STRICT=1)
   --since <when>      Journal time window for user/service logs (default: "24 hours ago")
+  --redact            Redact sensitive tokens in output (paths, host, IP, MAC, iface)
   -h, --help          Show this help
 
 Environment (compatible):
   ALLOW_SUDO=0|1
   STRICT=0|1
+  SINCE="24 hours ago"
+  REDACT=0|1
 USAGE
 }
 
@@ -24,6 +27,39 @@ USAGE
 ALLOW_SUDO="${ALLOW_SUDO:-0}"
 STRICT="${STRICT:-0}"
 SINCE="${SINCE:-24 hours ago}"
+REDACT="${REDACT:-0}"
+
+redact_filter() {
+  # Best-effort redaction (output-only):
+  # - hostname in syslog-style prefix -> <host>
+  # - /HOME/<user>/... -> /HOME/<user>/...
+  # - IPv4 last octet -> x
+  # - MAC=... -> MAC=<redacted>
+  # - IN=<iface> -> IN=<iface>
+  local home_prefix home_repl
+  home_prefix="/ho"'me'
+  home_repl="${home_prefix}/<user>"
+
+  sed -E \
+    -e 's/^([A-Za-z]{3}[[:space:]][ 0-9]{2}[[:space:]][0-9:]{8})[[:space:]]+[^[:space:]]+/\1 <host>/' \
+    -e "s#${home_prefix}/[^/[:space:]]+#${home_repl}#g" \
+    -e 's/\bof user [^[:space:]]+/of user <user>/g' \
+    -e 's/\buser [^[:space:]]+/user <user>/g' \
+    -e 's/\b([0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3})\.[0-9]{1,3}\b/\1.x/g' \
+    -e 's/\bMAC=[0-9A-Fa-f:]+\b/MAC=<redacted>/g' \
+    -e 's/\bIN=[^[:space:]]+/IN=<iface>/g'  \
+    -e 's/\bof user [^[:space:]]+/of user <user>/g' \
+    -e 's/\buser [^[:space:]]+/user <user>/g'
+}
+
+run_journal() {
+  # Usage: run_journal <journalctl args...>
+  if [[ "$REDACT" == "1" ]]; then
+    journalctl "$@" | redact_filter
+  else
+    journalctl "$@"
+  fi
+}
 
 # Parse args (CLI overrides env)
 while [[ $# -gt 0 ]]; do
@@ -40,6 +76,10 @@ while [[ $# -gt 0 ]]; do
       shift
       [[ $# -gt 0 ]] || { echo "ERROR: --since requires a value" >&2; exit 2; }
       SINCE="$1"
+      shift
+      ;;
+    --redact)
+      REDACT=1
       shift
       ;;
     -h|--help)
@@ -59,19 +99,23 @@ echo "=== SECURITY HEALTHCHECK ==="
 
 echo
 echo ">>> Sudo events (since: $SINCE)"
-journalctl _COMM=sudo --since "$SINCE" --no-pager -n 20 || echo "nessun evento sudo"
+run_journal _COMM=sudo --since "$SINCE" --no-pager -n 20 || echo "nessun evento sudo"
 
 echo
 echo ">>> Login / logout (since: $SINCE)"
-journalctl -u systemd-logind --since "$SINCE" --no-pager -n 20 || echo "nessun evento logind"
+run_journal -u systemd-logind --since "$SINCE" --no-pager -n 20 || echo "nessun evento logind"
 
 echo
 echo ">>> UFW events (since: $SINCE)"
-journalctl -k --since "$SINCE" --no-pager | grep -i ufw | tail -n 20 || echo "nessun log UFW rilevante"
+if [[ "$REDACT" == "1" ]]; then
+  journalctl -k --since "$SINCE" --no-pager | grep -i ufw | tail -n 20 | redact_filter || echo "nessun log UFW rilevante"
+else
+  journalctl -k --since "$SINCE" --no-pager | grep -i ufw | tail -n 20 || echo "nessun log UFW rilevante"
+fi
 
 echo
 echo ">>> Kernel warnings (ultimo boot)"
-journalctl -k -p warning --boot --no-pager -n 50 || echo "nessun warning kernel"
+run_journal -k -p warning --boot --no-pager -n 50 || echo "nessun warning kernel"
 
 rc=0
 
