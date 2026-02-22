@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 ## Unreleased
 - (nothing yet)
 
+## v0.1.3
+
+### Added
+- --help-md for security-health
+- CI: make check on Ubuntu 22.04 and 24.04
+- install-system / uninstall-system targets
+
+### Changed
+- Uniform help layout across tools
+- Default install prefix to ~/.local
+
+### Fixed
+- ShellCheck clean (SC2317)
+- no-leaks compliance
+
 ## 0.1.2
 - Add: `hdd_cleanup` (workspace cleanup tool; dry-run by default; destructive actions require `--apply`).
 - Add: `hdd_cleanup --help-md` (embedded Markdown docs).
