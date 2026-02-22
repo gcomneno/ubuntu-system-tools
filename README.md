@@ -10,6 +10,11 @@ This repository is intentionally minimal: tools are designed to **observe and au
 
 - **Safety first**: default behavior is read-only.
 - **Paranoid by design**: no destructive actions, no implicit changes.
+- **Paranoid by design**: no destructive actions, no implicit changes.
+    If a tool, like `hdd_cleanup`, could be dangerous, it does not belong here.
+      -  explicit (`--apply`)
+      - documented
+      - limited to regenerable artifacts only
 - **No assumptions**: everything configurable via environment variables.
 - **No personal data**: no hardcoded paths, usernames, or machine-specific details.
 
@@ -18,6 +23,22 @@ If a tool could be dangerous, it does not belong here.
 ---
 
 ## Tools
+
+### `hdd_cleanup`
+
+Cleanup helper for developer workspaces: finds and (optionally) removes **regenerable artifacts** such as `target/`, `node_modules/`, `.venv/`, and common Python caches.
+
+⚠️ **Safety model**:
+- Default is **dry-run** (no deletion).
+- Deletion requires explicit `--apply`.
+- Intended for **dev directories** (e.g. `$HOME/Progetti`), not system paths.
+
+Docs are embedded in the tool:
+```bash
+tools/hdd_cleanup --help-md
+```
+
+
 
 ### `who-uses`
 
@@ -64,7 +85,7 @@ Logs are never written inside the repository.
 
 ## What this repo does NOT do
 - No installs
-- No removals
+- No removals by default (cleanup actions are opt-in, e.g. `hdd_cleanup --apply`)
 - No service management
 - No privilege escalation
 - No system modification

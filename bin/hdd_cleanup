@@ -1,0 +1,436 @@
+#!/usr/bin/env bash
+: <<'HDD_CLEANUP_MD'
+# HDD Cleanup Utility (ubuntu-system-tools)
+
+Utility Bash “safe-by-default” per ripulire directory di sviluppo da artefatti **rigenerabili** (venv, cache, build output)
+senza rischiare di cancellare codice vero.
+
+> Filosofia: *pochi bersagli, molto sicuri*.  
+> Default = **dry-run** (non cancella). Per cancellare serve `--apply`.
+
+---
+
+## Cosa cancella (SAFE JUNK)
+
+Sempre e ovunque (entro `--root`, fino a `--max-depth`):
+
+- `target/` (Rust)
+- `node_modules/`
+- `.venv/`, `venv/`
+- cache Python:
+  - `__pycache__/`
+  - `.pytest_cache/`
+  - `.mypy_cache/`
+  - `.ruff_cache/`
+  - `.tox/`
+
+**Nota**: quando trova una directory “grande” generata (tipo `.venv` o `target`) la prende **una volta** e poi fa *prune*
+(quindi non elenca/cancella anche i pezzettini interni).
+
+---
+
+## build/ e dist/ (OPT-IN)
+
+`build/` e `dist/` NON sono sempre rigenerabili o “spazzatura” in senso stretto (potrebbero contenere artefatti importanti).
+Per questo sono gestiti come comando separato e super-limitato (solo vicini alla root di repo: `maxdepth=2`).
+
+---
+
+## Comandi
+
+### Documentazione Markdown
+Stampa questa documentazione (il blocco Markdown in testa allo script):
+
+```bash
+bash hdd_cleanup.sh --help-md
+```
+
+### Audit
+Mostra uso disco e directory principali.
+
+```bash
+bash hdd_cleanup.sh audit
+```
+
+### Report SAFE junk (non cancella)
+```bash
+bash hdd_cleanup.sh report-junk --root ~/Progetti
+```
+
+### Purge SAFE junk (cancella davvero)
+```bash
+bash hdd_cleanup.sh purge-junk --root ~/Progetti --apply
+```
+
+### Report build/dist (opt-in)
+```bash
+bash hdd_cleanup.sh report-builddist --root ~/Progetti
+```
+
+### Purge build/dist (opt-in, cancella davvero)
+```bash
+bash hdd_cleanup.sh purge-builddist --root ~/Progetti --apply
+```
+
+---
+
+## Escludere progetti
+
+Salta i path che contengono una stringa (ripetibile):
+
+```bash
+bash hdd_cleanup.sh purge-junk --root ~/Progetti \
+  --exclude qhse-supplychain-demo \
+  --exclude ubuntu-system-tools \
+  --apply
+```
+
+---
+
+## Summary (spazio “recuperabile” o “recuperato”)
+
+Aggiungi `--summary` per vedere la stima totale:
+
+- in `report-*`: “Potential reclaim”
+- in `purge-*`: “Reclaimed”
+
+Esempio:
+```bash
+bash hdd_cleanup.sh report-junk --root ~/Progetti --summary
+bash hdd_cleanup.sh purge-junk --root ~/Progetti --summary --apply
+```
+
+---
+
+## Logging
+
+Di default il tool scrive un log append-only (utile per “forensics” e abitudini di pulizia):
+
+- Default log file: `~/.cache/ubuntu-system-tools/hdd_cleanup.log`
+
+Opzioni:
+- `--no-log` disabilita logging
+- `--log-file PATH` imposta un path diverso
+
+Esempio:
+```bash
+bash hdd_cleanup.sh purge-junk --root ~/Progetti --apply --summary
+tail -n 50 ~/.cache/ubuntu-system-tools/hdd_cleanup.log
+```
+
+---
+
+## Requisiti
+
+- Bash 4+ (associative arrays)
+- GNU coreutils (`du`, `sort`, `numfmt`), GNU find
+
+---
+
+## Installazione suggerita (ubuntu-system-tools)
+
+Metti questo file in:
+- `ubuntu-system-tools/tools/hdd_cleanup.sh`
+
+e rendilo eseguibile:
+```bash
+chmod +x ubuntu-system-tools/tools/hdd_cleanup.sh
+```
+
+HDD_CLEANUP_MD
+
+set -euo pipefail
+
+DRY_RUN=1
+ROOT="${HOME}/Progetti"
+MAX_DEPTH=6
+DO_SUMMARY=0
+
+LOG_ENABLED=1
+LOG_FILE_DEFAULT="${HOME}/.cache/ubuntu-system-tools/hdd_cleanup.log"
+LOG_FILE="${LOG_FILE_DEFAULT}"
+
+EXCLUDES=()
+
+say() { printf "\n==> %s\n" "$*"; }
+die() { echo "ERROR: $*" >&2; exit 2; }
+
+ensure_log_dir() {
+  local d
+  d="$(dirname -- "$LOG_FILE")"
+  mkdir -p -- "$d"
+}
+
+ts() { date -Is; }
+
+log_line() {
+  [[ "$LOG_ENABLED" == "1" ]] || return 0
+  ensure_log_dir
+  printf "%s %s\n" "$(ts)" "$*" >> "$LOG_FILE"
+}
+
+hr_bytes() {
+  local b="${1:-0}"
+  if command -v numfmt >/dev/null 2>&1; then
+    numfmt --to=iec --suffix=B "$b"
+  else
+    echo "${b}B"
+  fi
+}
+
+print_help_md() {
+  # Prints the Markdown documentation block at the top of this script.
+  # Source-of-truth: the here-doc between ": <<'HDD_CLEANUP_MD'" and "HDD_CLEANUP_MD".
+  awk '
+    BEGIN { p=0 }
+    /^: <<'\''HDD_CLEANUP_MD'\''$/ { p=1; next }
+    p && /^HDD_CLEANUP_MD$/ { exit }
+    p { print }
+  ' "$0"
+}
+
+path_is_excluded() {
+  local p="$1"
+  local e
+  for e in "${EXCLUDES[@]}"; do
+    [[ -z "$e" ]] && continue
+    if [[ "$p" == *"$e"* ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+read_unique_paths() {
+  local -a _paths=()
+  mapfile -d '' _paths || true
+
+  paths=()
+  [[ "${#_paths[@]}" -eq 0 ]] && return 0
+
+  declare -A seen=()
+  local p
+  for p in "${_paths[@]}"; do
+    [[ -n "${seen[$p]+x}" ]] && continue
+    seen["$p"]=1
+
+    if path_is_excluded "$p"; then
+      continue
+    fi
+
+    paths+=("$p")
+  done
+}
+
+sum_paths_bytes() {
+  local total=0
+  local p bytes
+  for p in "$@"; do
+    bytes="$(du -sb -- "$p" 2>/dev/null | awk '{print $1}' || echo 0)"
+    total=$(( total + bytes ))
+  done
+  echo "$total"
+}
+
+report_paths() {
+  local title="$1"
+  say "$title"
+
+  if [[ "${#paths[@]}" -eq 0 ]]; then
+    say "No matches found."
+    return 0
+  fi
+
+  printf "%s\0" "${paths[@]}" | xargs -0 du -sh 2>/dev/null | sort -h
+
+  if [[ "$DO_SUMMARY" == "1" ]]; then
+    local total
+    total="$(sum_paths_bytes "${paths[@]}")"
+    say "Summary: potential reclaim = $(hr_bytes "$total")"
+  fi
+}
+
+purge_paths() {
+  if [[ "$DRY_RUN" == "1" ]]; then
+    say "Refusing to delete in dry-run mode. Re-run with --apply."
+    exit 2
+  fi
+
+  if [[ "${#paths[@]}" -eq 0 ]]; then
+    say "Nothing to delete."
+    return 0
+  fi
+
+  local total_before=0
+  if [[ "$DO_SUMMARY" == "1" ]]; then
+    total_before="$(sum_paths_bytes "${paths[@]}")"
+  fi
+
+  say "Deleting directories..."
+  log_line "BEGIN purge root='$ROOT' cmd='$CMD' max_depth='$MAX_DEPTH' excludes='${EXCLUDES[*]}'"
+
+  local p
+  for p in "${paths[@]}"; do
+    echo "+ rm -rf -- '$p'"
+    log_line "DELETE '$p'"
+    rm -rf -- "$p"
+  done
+
+  log_line "END purge"
+
+  say "Done."
+  if [[ "$DO_SUMMARY" == "1" ]]; then
+    say "Summary: reclaimed ≈ $(hr_bytes "$total_before")"
+  fi
+}
+
+collect_junk() {
+  find "$ROOT" \
+    -maxdepth "$MAX_DEPTH" \
+    -type d -name .git -prune -o \
+    -type d \( -name .venv -o -name venv -o -name node_modules -o -name target \) -prune -print0 -o \
+    -type d \( \
+      -name __pycache__ -o \
+      -name .pytest_cache -o \
+      -name .mypy_cache -o \
+      -name .ruff_cache -o \
+      -name .tox \
+    \) -print0 \
+    2>/dev/null
+}
+
+collect_builddist() {
+  find "$ROOT" \
+    -maxdepth 2 \
+    -type d -name .git -prune -o \
+    -type d \( -name build -o -name dist \) -print0 \
+    2>/dev/null
+}
+
+usage() {
+  cat <<EOF
+Usage: $0 <audit|report-junk|purge-junk|report-builddist|purge-builddist> [options]
+
+Commands:
+  audit              disk overview + top directories
+  report-junk        list SAFE junk dirs (no deletion)
+  purge-junk         delete SAFE junk dirs (requires --apply)
+  report-builddist   list build/dist near repo roots (opt-in)
+  purge-builddist    delete build/dist near repo roots (requires --apply)
+
+Options:
+  --root PATH        root to scan (default: ~/Progetti)
+  --max-depth N      search depth (default: 6)
+  --exclude STR      exclude paths containing STR (repeatable)
+  --apply            actually delete (default: dry-run)
+  --summary          show total reclaimable/reclaimed size
+  --log-file PATH    log file path (default: ~/.cache/ubuntu-system-tools/hdd_cleanup.log)
+  --no-log           disable logging
+  --help-md          print Markdown documentation and exit
+  -h, --help         show help
+EOF
+}
+
+audit() {
+  say "Disk overview"
+  df -hT / || true
+  echo
+  lsblk -f || true
+
+  say "Top-level usage (/)" 
+  sudo du -xhd1 / 2>/dev/null | sort -h || true
+
+  say "Top-level usage (~)"
+  du -hd1 ~ 2>/dev/null | sort -h || true
+
+  say "Top-level usage (${ROOT})"
+  du -hd1 "${ROOT}" 2>/dev/null | sort -h || true
+}
+
+report_junk_cmd() {
+  say "Scanning for SAFE junk dirs under: $ROOT (maxdepth=$MAX_DEPTH)"
+  local -a paths=()
+  read_unique_paths < <(collect_junk)
+  report_paths "SAFE junk dirs (size, path):"
+  log_line "REPORT cmd=report-junk root='$ROOT' count='${#paths[@]}' excludes='${EXCLUDES[*]}' summary='$DO_SUMMARY'"
+}
+
+purge_junk_cmd() {
+  say "Scanning for SAFE junk dirs under: $ROOT (maxdepth=$MAX_DEPTH)"
+  local -a paths=()
+  read_unique_paths < <(collect_junk)
+  report_paths "SAFE junk dirs to delete (size, path):"
+  purge_paths
+}
+
+report_builddist_cmd() {
+  say "Scanning for build/dist near repo roots under: $ROOT (maxdepth=2)"
+  local -a paths=()
+  read_unique_paths < <(collect_builddist)
+  report_paths "build/dist dirs (size, path):"
+  log_line "REPORT cmd=report-builddist root='$ROOT' count='${#paths[@]}' excludes='${EXCLUDES[*]}' summary='$DO_SUMMARY'"
+}
+
+purge_builddist_cmd() {
+  say "Scanning for build/dist near repo roots under: $ROOT (maxdepth=2)"
+  local -a paths=()
+  read_unique_paths < <(collect_builddist)
+  report_paths "build/dist dirs to delete (size, path):"
+  purge_paths
+}
+
+# Global help flags (must work even without a subcommand)
+case "${1:-}" in
+  --help-md)
+    print_help_md
+    exit 0
+    ;;
+  -h|--help|help)
+    usage
+    exit 0
+    ;;
+esac
+
+CMD="${1:-}"
+shift || true
+
+while [[ "${1:-}" != "" ]]; do
+  case "$1" in
+    --apply) DRY_RUN=0 ;;
+    --root) ROOT="${2:?missing value for --root}"; shift ;;
+    --max-depth) MAX_DEPTH="${2:?missing value for --max-depth}"; shift ;;
+    --exclude) EXCLUDES+=("${2:?missing value for --exclude}"); shift ;;
+    --summary) DO_SUMMARY=1 ;;
+    --no-log) LOG_ENABLED=0 ;;
+    --log-file) LOG_FILE="${2:?missing value for --log-file}"; shift ;;
+    --help-md) print_help_md; exit 0 ;;
+    -h|--help) usage; exit 0 ;;
+    *) die "Unknown arg: $1" ;;
+  esac
+  shift || true
+done
+
+case "$CMD" in
+  audit)
+    log_line "RUN cmd=audit root='$ROOT'"
+    audit
+    ;;
+  report-junk)
+    report_junk_cmd
+    ;;
+  purge-junk)
+    purge_junk_cmd
+    ;;
+  report-builddist)
+    report_builddist_cmd
+    ;;
+  purge-builddist)
+    purge_builddist_cmd
+    ;;
+  ""|help|-h|--help)
+    usage
+    ;;
+  *)
+    die "Unknown command: $CMD"
+    ;;
+esac
