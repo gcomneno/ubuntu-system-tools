@@ -86,24 +86,62 @@ info(){ echo ">>> $*"; }
 
 usage() {
   cat <<'USAGE'
-who-uses: scan projects + system to find references to a term (safe, read-only)
+NAME
+  who-uses - safe, read-only scan for references to a term (projects + optional system snapshot)
 
-Usage:
-  who-uses scan <term> [--include-venv] [--deps-only] [--summary] [--json] [--fixed] [--case-sensitive] [--fail-on-hit] [--no-system|--projects-only] [--no-projects]
+SYNOPSIS
+  who-uses scan <term> [options]
 
-Environment (optional):
-  PROJECTS_DIR  default: $HOME/Progetti
-  TOWER_BASE    default: $HOME/Documents/tower-notes
-  LOG_DIR       default: $TOWER_BASE/tower/logs
+COMMANDS
+  scan               Scan projects (and optionally system) for <term>
 
-Exit codes:
-  0 = ok (scan completed / no hits in --json)
-  1 = hits found (only in --json or --fail-on-hit)
-  2 = usage/operational error
+OPTIONS
+  --deps-only        Scan dependency files only (pyproject.toml, requirements*.txt, package*.json, lockfiles)
+  --include-venv     Include typical virtualenv dirs (otherwise excluded)
+  --no-projects      Disable project scanning
+  --no-system        Disable system snapshot scanning
+  --projects-only    Alias for --no-system
+  --summary          Compact, sanitized human summary
+  --json             JSON output (v1): projects-only, sanitized, deterministic
+  --fixed            Treat <term> as a literal string (no regex)
+  --case-sensitive   Force case-sensitive matching (disables smart-case)
+  --fail-on-hit      Exit 1 if at least one match is found (human mode)
+  --help-md          Print embedded Markdown help and exit
+  -h, --help         Show this help and exit
+
+ENVIRONMENT (optional)
+  PROJECTS_DIR       Default: $HOME/Progetti
+  TOWER_BASE         Default: $HOME/Documents/tower-notes
+  LOG_DIR            Default: $TOWER_BASE/tower/logs
+
+EXIT CODES
+  0  Success (and in --json: no hits)
+  1  Hits found (in --json, or with --fail-on-hit)
+  2  Usage or operational error
+
 USAGE
 }
 
+print_help_md() {
+  # Prints the embedded Markdown documentation block at the top of this script.
+  # Source-of-truth: the here-doc between ": <<'WHO_USES_MD'" and "WHO_USES_MD".
+  awk '
+    BEGIN { p=0 }
+    /^: <<'''WHO_USES_MD'''$/ { p=1; next }
+    p && /^WHO_USES_MD$/ { exit }
+    p { print }
+  ' "$0"
+}
+
+
+
 need_cmd(){ command -v "$1" >/dev/null 2>&1 || die "comando mancante: $1"; }
+
+# Global help flags (must work even without subcommands)
+case "${1:-}" in
+  --help-md) print_help_md; exit 0 ;;
+  -h|--help|help|"") usage; [[ "${1:-}" == "" ]] && exit 2 || exit 0 ;;
+esac
 
 CMD="${1:-}"
 TERM="${2:-}"
@@ -136,6 +174,7 @@ while [[ $# -gt 0 ]]; do
     --fixed) FIXED=1; shift;;
     --case-sensitive) CASE_SENSITIVE=1; shift;;
     --fail-on-hit) FAIL_ON_HIT=1; shift;;
+    --help-md) print_help_md; exit 0;;
     -h|--help) usage; exit 0;;
     *) die "argomento sconosciuto: $1";;
   esac
