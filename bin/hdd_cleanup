@@ -308,28 +308,38 @@ collect_builddist() {
 }
 
 usage() {
-  cat <<EOF
-Usage: $0 <audit|report-junk|purge-junk|report-builddist|purge-builddist> [options]
+  cat <<'EOF'
+NAME
+  hdd_cleanup - safe-by-default cleanup of regenerable dev artifacts
 
-Commands:
-  audit              disk overview + top directories
-  report-junk        list SAFE junk dirs (no deletion)
-  purge-junk         delete SAFE junk dirs (requires --apply)
-  report-builddist   list build/dist near repo roots (opt-in)
-  purge-builddist    delete build/dist near repo roots (requires --apply)
+SYNOPSIS
+  hdd_cleanup <command> [options]
 
-Options:
-  --root PATH        root to scan (default: ~/Progetti)
-  --max-depth N      search depth (default: 6)
-  --exclude STR      exclude paths containing STR (repeatable)
-  --apply            actually delete (default: dry-run)
-  --summary          show total reclaimable/reclaimed size
-  --log-file PATH    log file path (default: ~/.cache/ubuntu-system-tools/hdd_cleanup.log)
-  --no-log           disable logging
-  --help-md          print Markdown documentation and exit
-  -h, --help         show help
+COMMANDS
+  audit              Disk overview + top directories (read-only)
+  report-junk        List SAFE junk dirs (no deletion)
+  purge-junk         Delete SAFE junk dirs (requires --apply)
+  report-builddist   List build/dist near repo roots (opt-in)
+  purge-builddist    Delete build/dist near repo roots (requires --apply)
+
+OPTIONS
+  --root PATH        Root to scan (default: $HOME/Progetti)
+  --max-depth N      Search depth for junk scan (default: 6)
+  --exclude STR      Exclude paths containing STR (repeatable)
+  --summary          Show total reclaimable/reclaimed size
+  --apply            Actually delete (default: dry-run)
+  --log-file PATH    Log file path (default: $HOME/.cache/ubuntu-system-tools/hdd_cleanup.log)
+  --no-log           Disable logging
+  --help-md          Print embedded Markdown help and exit
+  -h, --help         Show this help and exit
+
+EXIT CODES
+  0  Success
+  2  Refused-by-safety (e.g. purge without --apply) or operational error
+
 EOF
 }
+
 
 audit() {
   say "Disk overview"

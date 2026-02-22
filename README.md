@@ -7,18 +7,41 @@ This repository is intentionally minimal: tools are designed to **observe and au
 ---
 
 ## Philosophy
-
-- **Safety first**: default behavior is read-only.
-- **Paranoid by design**: no destructive actions, no implicit changes.
-- **Paranoid by design**: no destructive actions, no implicit changes.
-    If a tool, like `hdd_cleanup`, could be dangerous, it does not belong here.
-      -  explicit (`--apply`)
-      - documented
-      - limited to regenerable artifacts only
-- **No assumptions**: everything configurable via environment variables.
-- **No personal data**: no hardcoded paths, usernames, or machine-specific details.
+- **Safety first**: destructive actions are opt-in and limited to regenerable artifacts.
+- **Dry-run by default**: nothing is removed unless `--apply` is explicitly provided.
+- **No privilege escalation**
+- **No system modification outside user-controlled paths**
 
 If a tool could be dangerous, it does not belong here.
+
+---
+
+## Install
+
+```bash
+git clone https://github.com/gcomneno/ubuntu-system-tools
+cd ubuntu-system-tools
+make install PREFIX=$HOME/.local
+```
+
+Uninstall:
+```bash
+make uninstall PREFIX=$HOME/.local
+```
+
+## Config
+Create a local config (not tracked by git):
+```bash
+make init-config
+nano ~/.config/ubuntu-system-tools/config.env
+```
+
+Then, before running tools:
+```bash
+set -a
+source ~/.config/ubuntu-system-tools/config.env
+set +a
+```
 
 ---
 
@@ -35,10 +58,10 @@ Cleanup helper for developer workspaces: finds and (optionally) removes **regene
 
 Docs are embedded in the tool:
 ```bash
-tools/hdd_cleanup --help-md
+bin/hdd_cleanup --help-md
 ```
 
-
+---
 
 ### `who-uses`
 

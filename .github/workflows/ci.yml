@@ -25,6 +25,7 @@ jobs:
 
       - name: Run pre-commit
         run: pre-commit run --all-files
+
   shellcheck:
     name: ShellCheck
     runs-on: ubuntu-latest
@@ -41,3 +42,20 @@ jobs:
         run: |
           shellcheck --version
           shellcheck -x bin/*
+
+  make-check:
+    name: make check (ubuntu ${{ matrix.ubuntu }})
+    strategy:
+      fail-fast: false
+      matrix:
+        ubuntu: ["22.04", "24.04"]
+    runs-on: ubuntu-${{ matrix.ubuntu }}
+    needs: [pre-commit, shellcheck]    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run tests
+        run: |
+          set -euo pipefail
+          make check

@@ -1,26 +1,42 @@
 #!/usr/bin/env bash
 set -euo pipefail
+IFS=$'\n\t'
 
 usage() {
   cat <<'USAGE'
-security-health - local security health checks (read-only)
+security-health: local security health checks (safe, read-only)
 
 Usage:
   security-health [options]
 
 Options:
-  --allow-sudo        Enable non-interactive sudo checks (equiv: ALLOW_SUDO=1)
-  --strict            Fail with exit code 2 if root checks are requested but cannot run / fail (equiv: STRICT=1)
-  --since <when>      Journal time window for user/service logs (default: "24 hours ago")
-  --redact            Redact sensitive tokens in output (paths, host, IP, MAC, iface)
+  --since <when>      Journal time window (default: "24 hours ago")
+  --redact            Redact sensitive tokens in output (best-effort)
+  --allow-sudo        Enable non-interactive sudo checks (ALLOW_SUDO=1)
+  --strict            Exit 2 if root checks are requested but cannot run / fail (STRICT=1)
+  --help-md           Print embedded Markdown documentation and exit
   -h, --help          Show this help
 
-Environment (compatible):
-  ALLOW_SUDO=0|1
-  STRICT=0|1
+Environment:
   SINCE="24 hours ago"
   REDACT=0|1
+  ALLOW_SUDO=0|1
+  STRICT=0|1
+
+Exit codes:
+  0  OK (no relevant findings)
+  1  Findings detected
+  2  Operational error / invalid usage / strict root-check failure
 USAGE
+}
+
+help_md() {
+  awk '
+    BEGIN { p=0 }
+    /^: <<'\''SECURITY_HEALTH_MD'\''$/ { p=1; next }
+    /^SECURITY_HEALTH_MD$/ { p=0 }
+    p==1 { print }
+  ' "$0"
 }
 
 # Defaults (env-compatible)
@@ -29,10 +45,17 @@ STRICT="${STRICT:-0}"
 SINCE="${SINCE:-24 hours ago}"
 REDACT="${REDACT:-0}"
 
+info() { echo "INFO: $*" >&2; }
+warn() { echo "WARN: $*" >&2; }
+err()  { echo "ERROR: $*" >&2; }
+
+rc=0
+mark_finding() { [[ "$rc" -eq 0 ]] && rc=1; }
+
 redact_filter() {
   # Best-effort redaction (output-only):
   # - hostname in syslog-style prefix -> <host>
-  # - /HOME/<user>/... -> /HOME/<user>/...
+  # - $home/<user>/... -> $home/<user>/...
   # - IPv4 last octet -> x
   # - MAC=... -> MAC=<redacted>
   # - IN=<iface> -> IN=<iface>
@@ -64,6 +87,16 @@ run_journal() {
 # Parse args (CLI overrides env)
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --since)
+      shift
+      [[ $# -gt 0 ]] || { err "--since requires a value"; exit 2; }
+      SINCE="$1"
+      shift
+      ;;
+    --redact)
+      REDACT=1
+      shift
+      ;;
     --allow-sudo)
       ALLOW_SUDO=1
       shift
@@ -72,22 +105,16 @@ while [[ $# -gt 0 ]]; do
       STRICT=1
       shift
       ;;
-    --since)
-      shift
-      [[ $# -gt 0 ]] || { echo "ERROR: --since requires a value" >&2; exit 2; }
-      SINCE="$1"
-      shift
-      ;;
-    --redact)
-      REDACT=1
-      shift
+    --help-md)
+      help_md
+      exit 0
       ;;
     -h|--help)
       usage
       exit 0
       ;;
     *)
-      echo "ERROR: unknown option: $1" >&2
+      err "unknown option: $1"
       echo >&2
       usage >&2
       exit 2
@@ -99,25 +126,59 @@ echo "=== SECURITY HEALTHCHECK ==="
 
 echo
 echo ">>> Sudo events (since: $SINCE)"
-run_journal _COMM=sudo --since "$SINCE" --no-pager -n 20 || echo "nessun evento sudo"
+if out="$(run_journal _COMM=sudo --since "$SINCE" --no-pager -n 20 2>/dev/null)"; then
+  if [[ -n "${out:-}" ]]; then
+    echo "$out"
+    mark_finding
+  else
+    echo "nessun evento sudo"
+  fi
+else
+  echo "nessun evento sudo"
+fi
 
 echo
 echo ">>> Login / logout (since: $SINCE)"
-run_journal -u systemd-logind --since "$SINCE" --no-pager -n 20 || echo "nessun evento logind"
+if out="$(run_journal -u systemd-logind --since "$SINCE" --no-pager -n 20 2>/dev/null)"; then
+  if [[ -n "${out:-}" ]]; then
+    echo "$out"
+    mark_finding
+  else
+    echo "nessun evento logind"
+  fi
+else
+  echo "nessun evento logind"
+fi
 
 echo
 echo ">>> UFW events (since: $SINCE)"
-if [[ "$REDACT" == "1" ]]; then
-  journalctl -k --since "$SINCE" --no-pager | grep -i ufw | tail -n 20 | redact_filter || echo "nessun log UFW rilevante"
+if out="$(journalctl -k --since "$SINCE" --no-pager 2>/dev/null | grep -i ufw | tail -n 20 || true)"; then
+  if [[ -n "${out:-}" ]]; then
+    if [[ "$REDACT" == "1" ]]; then
+      echo "$out" | redact_filter
+    else
+      echo "$out"
+    fi
+    mark_finding
+  else
+    echo "nessun log UFW rilevante"
+  fi
 else
-  journalctl -k --since "$SINCE" --no-pager | grep -i ufw | tail -n 20 || echo "nessun log UFW rilevante"
+  echo "nessun log UFW rilevante"
 fi
 
 echo
 echo ">>> Kernel warnings (ultimo boot)"
-run_journal -k -p warning --boot --no-pager -n 50 || echo "nessun warning kernel"
-
-rc=0
+if out="$(run_journal -k -p warning --boot --no-pager -n 50 2>/dev/null)"; then
+  if [[ -n "${out:-}" ]]; then
+    echo "$out"
+    mark_finding
+  else
+    echo "nessun warning kernel"
+  fi
+else
+  echo "nessun warning kernel"
+fi
 
 if command -v debsums >/dev/null 2>&1; then
   echo
@@ -139,6 +200,8 @@ if command -v debsums >/dev/null 2>&1; then
         echo "ROOT_CHECKS=FAILED (debsums)"
         if [[ "$STRICT" == "1" ]]; then
           rc=2
+        else
+          mark_finding
         fi
       fi
     fi
@@ -149,3 +212,73 @@ else
 fi
 
 exit "$rc"
+
+: <<'SECURITY_HEALTH_MD'
+# security-health
+
+`security-health` runs **local, read-only** security-oriented checks, primarily via `journalctl`, and (optionally) a
+basic integrity check via `debsums`.
+
+## Safety model
+
+- No destructive actions
+- No network activity
+- No privilege escalation (root checks are opt-in and non-interactive)
+
+## Usage
+
+```bash
+security-health [--since <when>] [--redact] [--allow-sudo] [--strict]
+```
+
+## Options
+
+- `--since <when>`: time window passed to `journalctl` (default: `"24 hours ago"`)
+- `--redact`: best-effort redaction of sensitive tokens in output
+- `--allow-sudo`: enable non-interactive root checks (`sudo -n ...`), if available
+- `--strict`: if root checks are requested, exit `2` when they cannot run or they fail
+- `--help-md`: print this Markdown documentation and exit
+- `-h, --help`: print short help and exit
+
+## Environment
+
+- `SINCE`: same as `--since`
+- `REDACT`: `0|1`
+- `ALLOW_SUDO`: `0|1`
+- `STRICT`: `0|1`
+
+CLI options override environment variables.
+
+## Exit codes
+
+- `0`: OK (no relevant findings)
+- `1`: Findings detected (events/warnings found, or non-strict root check failure)
+- `2`: Operational error / invalid usage / strict root-check failure
+
+## Examples
+
+Show last day (default):
+
+```bash
+security-health
+```
+
+Last 2 hours + redaction:
+
+```bash
+security-health --since "2 hours ago" --redact
+```
+
+Enable non-interactive root checks:
+
+```bash
+security-health --allow-sudo
+```
+
+Strict mode (root checks must run and pass):
+
+```bash
+security-health --allow-sudo --strict
+```
+
+SECURITY_HEALTH_MD
