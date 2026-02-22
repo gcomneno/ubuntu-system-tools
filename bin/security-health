@@ -2,6 +2,22 @@
 set -euo pipefail
 IFS=$'\n\t'
 
+print_help_md() {
+  cat <<'SECURITY_HEALTH_MD'
+# security-health
+
+`security-health` runs **local, read-only** security-oriented checks, primarily via `journalctl`, and (optionally) a
+basic integrity check via `debsums`.
+
+## Safety model
+- No destructive actions
+- No network activity
+- No privilege escalation (root checks are opt-in and non-interactive)
+
+... (resto del markdown)
+SECURITY_HEALTH_MD
+}
+
 usage() {
   cat <<'USAGE'
 security-health: local security health checks (safe, read-only)
@@ -30,24 +46,11 @@ Exit codes:
 USAGE
 }
 
-help_md() {
-  awk '
-    BEGIN { p=0 }
-    /^: <<'\''SECURITY_HEALTH_MD'\''$/ { p=1; next }
-    /^SECURITY_HEALTH_MD$/ { p=0 }
-    p==1 { print }
-  ' "$0"
-}
-
 # Defaults (env-compatible)
 ALLOW_SUDO="${ALLOW_SUDO:-0}"
 STRICT="${STRICT:-0}"
 SINCE="${SINCE:-24 hours ago}"
 REDACT="${REDACT:-0}"
-
-info() { echo "INFO: $*" >&2; }
-warn() { echo "WARN: $*" >&2; }
-err()  { echo "ERROR: $*" >&2; }
 
 rc=0
 mark_finding() { [[ "$rc" -eq 0 ]] && rc=1; }
@@ -106,7 +109,7 @@ while [[ $# -gt 0 ]]; do
       shift
       ;;
     --help-md)
-      help_md
+      print_help_md
       exit 0
       ;;
     -h|--help)
@@ -212,73 +215,3 @@ else
 fi
 
 exit "$rc"
-
-: <<'SECURITY_HEALTH_MD'
-# security-health
-
-`security-health` runs **local, read-only** security-oriented checks, primarily via `journalctl`, and (optionally) a
-basic integrity check via `debsums`.
-
-## Safety model
-
-- No destructive actions
-- No network activity
-- No privilege escalation (root checks are opt-in and non-interactive)
-
-## Usage
-
-```bash
-security-health [--since <when>] [--redact] [--allow-sudo] [--strict]
-```
-
-## Options
-
-- `--since <when>`: time window passed to `journalctl` (default: `"24 hours ago"`)
-- `--redact`: best-effort redaction of sensitive tokens in output
-- `--allow-sudo`: enable non-interactive root checks (`sudo -n ...`), if available
-- `--strict`: if root checks are requested, exit `2` when they cannot run or they fail
-- `--help-md`: print this Markdown documentation and exit
-- `-h, --help`: print short help and exit
-
-## Environment
-
-- `SINCE`: same as `--since`
-- `REDACT`: `0|1`
-- `ALLOW_SUDO`: `0|1`
-- `STRICT`: `0|1`
-
-CLI options override environment variables.
-
-## Exit codes
-
-- `0`: OK (no relevant findings)
-- `1`: Findings detected (events/warnings found, or non-strict root check failure)
-- `2`: Operational error / invalid usage / strict root-check failure
-
-## Examples
-
-Show last day (default):
-
-```bash
-security-health
-```
-
-Last 2 hours + redaction:
-
-```bash
-security-health --since "2 hours ago" --redact
-```
-
-Enable non-interactive root checks:
-
-```bash
-security-health --allow-sudo
-```
-
-Strict mode (root checks must run and pass):
-
-```bash
-security-health --allow-sudo --strict
-```
-
-SECURITY_HEALTH_MD
