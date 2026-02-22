@@ -9,7 +9,7 @@ PATTERN='(/home/[^/]+/|/mnt/|/media/|/run/media/|(^|[^A-Za-z0-9_])(TOKEN|SECRET|
 
 # pre-commit passes file list as args; if empty, scan repo files (rare)
 files=("$@")
-IGNORE_RE="^(tools/no-leaks\.sh|\.pre-commit-config\.yaml)$"
+IGNORE_RE="^(extra/no-leaks\.sh|\.pre-commit-config\.yaml)$"
 
 should_skip() {
   local f="$1"
