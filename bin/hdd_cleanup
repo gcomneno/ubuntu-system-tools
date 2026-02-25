@@ -348,7 +348,7 @@ audit() {
   lsblk -f || true
 
   say "Top-level usage (/)" 
-  sudo du -xhd1 / 2>/dev/null | sort -h || true
+  du -xhd1 "$HOME" 2>/dev/null | LC_ALL=C sort -h || true
 
   say "Top-level usage (~)"
   du -hd1 ~ 2>/dev/null | sort -h || true
