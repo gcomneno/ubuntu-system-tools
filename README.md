@@ -1,5 +1,4 @@
 # ubuntu-system-tools
-
 A small collection of **paranoid, read-only system inspection tools** for Ubuntu and Linux systems.
 
 This repository is intentionally minimal: tools are designed to **observe and audit**, not to modify system state.
@@ -165,3 +164,7 @@ This tool is read-only and performs no network activity.
 Output may contain sensitive local system information (usernames, IP addresses, service names).  
 Review output before sharing publicly.
 
+---
+
+## Policy
+See **POLICY.md**. Tools must be idempotent and deterministic.

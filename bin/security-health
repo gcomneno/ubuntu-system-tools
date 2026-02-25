@@ -2,19 +2,24 @@
 set -euo pipefail
 IFS=$'\n\t'
 
+err() { echo "error: $*" >&2; }
+
 print_help_md() {
   cat <<'SECURITY_HEALTH_MD'
 # security-health
 
-`security-health` runs **local, read-only** security-oriented checks, primarily via `journalctl`, and (optionally) a
-basic integrity check via `debsums`.
+`security-health` runs **local, read-only** security-oriented checks via `journalctl`.
 
 ## Safety model
 - No destructive actions
 - No network activity
-- No privilege escalation (root checks are opt-in and non-interactive)
+- No privilege escalation (no root checks)
 
-... (resto del markdown)
+## Usage
+- `security-health [--since <when>] [--redact] [--help-md]`
+
+## Notes
+- Output may contain sensitive local information unless `--redact` is enabled.
 SECURITY_HEALTH_MD
 }
 
@@ -28,27 +33,21 @@ Usage:
 Options:
   --since <when>      Journal time window (default: "24 hours ago")
   --redact            Redact sensitive tokens in output (best-effort)
-  --allow-sudo        Enable non-interactive sudo checks (ALLOW_SUDO=1)
-  --strict            Exit 2 if root checks are requested but cannot run / fail (STRICT=1)
   --help-md           Print embedded Markdown documentation and exit
   -h, --help          Show this help
 
 Environment:
   SINCE="24 hours ago"
   REDACT=0|1
-  ALLOW_SUDO=0|1
-  STRICT=0|1
 
 Exit codes:
   0  OK (no relevant findings)
   1  Findings detected
-  2  Operational error / invalid usage / strict root-check failure
+  2  Operational error / invalid usage
 USAGE
 }
 
 # Defaults (env-compatible)
-ALLOW_SUDO="${ALLOW_SUDO:-0}"
-STRICT="${STRICT:-0}"
 SINCE="${SINCE:-24 hours ago}"
 REDACT="${REDACT:-0}"
 
@@ -58,7 +57,7 @@ mark_finding() { [[ "$rc" -eq 0 ]] && rc=1; }
 redact_filter() {
   # Best-effort redaction (output-only):
   # - hostname in syslog-style prefix -> <host>
-  # - $home/<user>/... -> $home/<user>/...
+  # - $HOME/<user>/... -> $HOME/<user>/...
   # - IPv4 last octet -> x
   # - MAC=... -> MAC=<redacted>
   # - IN=<iface> -> IN=<iface>
@@ -73,7 +72,7 @@ redact_filter() {
     -e 's/\buser [^[:space:]]+/user <user>/g' \
     -e 's/\b([0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3})\.[0-9]{1,3}\b/\1.x/g' \
     -e 's/\bMAC=[0-9A-Fa-f:]+\b/MAC=<redacted>/g' \
-    -e 's/\bIN=[^[:space:]]+/IN=<iface>/g'  \
+    -e 's/\bIN=[^[:space:]]+/IN=<iface>/g' \
     -e 's/\bof user [^[:space:]]+/of user <user>/g' \
     -e 's/\buser [^[:space:]]+/user <user>/g'
 }
@@ -100,14 +99,6 @@ while [[ $# -gt 0 ]]; do
       REDACT=1
       shift
       ;;
-    --allow-sudo)
-      ALLOW_SUDO=1
-      shift
-      ;;
-    --strict)
-      STRICT=1
-      shift
-      ;;
     --help-md)
       print_help_md
       exit 0
@@ -128,16 +119,16 @@ done
 echo "=== SECURITY HEALTHCHECK ==="
 
 echo
-echo ">>> Sudo events (since: $SINCE)"
+echo ">>> Privilege escalation events (since: $SINCE)"
 if out="$(run_journal _COMM=sudo --since "$SINCE" --no-pager -n 20 2>/dev/null)"; then
   if [[ -n "${out:-}" ]]; then
     echo "$out"
     mark_finding
   else
-    echo "nessun evento sudo"
+    echo "nessun evento di privilege escalation"
   fi
 else
-  echo "nessun evento sudo"
+  echo "nessun evento di privilege escalation"
 fi
 
 echo
@@ -181,37 +172,6 @@ if out="$(run_journal -k -p warning --boot --no-pager -n 50 2>/dev/null)"; then
   fi
 else
   echo "nessun warning kernel"
-fi
-
-if command -v debsums >/dev/null 2>&1; then
-  echo
-  echo ">>> Debsums core packages (root integrity check)"
-
-  if [[ "$ALLOW_SUDO" != "1" ]]; then
-    echo "ROOT_CHECKS=SKIPPED (ALLOW_SUDO=0)"
-  else
-    if ! sudo -n true 2>/dev/null; then
-      echo "ROOT_CHECKS=SKIPPED (sudo non disponibile non-interattivo)"
-      if [[ "$STRICT" == "1" ]]; then
-        echo "ROOT_CHECKS=FAILED (STRICT=1)"
-        rc=2
-      fi
-    else
-      if sudo debsums -s sudo coreutils bash systemd systemd-sysv; then
-        echo "ROOT_CHECKS=OK"
-      else
-        echo "ROOT_CHECKS=FAILED (debsums)"
-        if [[ "$STRICT" == "1" ]]; then
-          rc=2
-        else
-          mark_finding
-        fi
-      fi
-    fi
-  fi
-else
-  echo
-  echo ">>> debsums non installato, salta check integrità."
 fi
 
 exit "$rc"
