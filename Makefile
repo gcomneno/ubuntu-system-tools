@@ -4,7 +4,7 @@ CONFIGFILE ?= $(CONFIGDIR)/config.env
 PREFIX ?= $(HOME)/.local
 BINDIR ?= $(PREFIX)/bin
 
-TOOLS := bin/hdd_cleanup bin/security-health bin/who-uses
+TOOLS := bin/hdd_cleanup bin/security-health bin/who-uses bin/printer-doctor
 
 .PHONY: init-config install uninstall check print-prefix install-system uninstall-system
 
@@ -47,3 +47,4 @@ uninstall-system:
 
 check:
 	tests/selftest_hdd_cleanup.sh
+	tests/selftest_printer_doctor.sh
