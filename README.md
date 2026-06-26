@@ -1,170 +1,240 @@
 # ubuntu-system-tools
-A small collection of **paranoid, read-only system inspection tools** for Ubuntu and Linux systems.
 
-This repository is intentionally minimal: tools are designed to **observe and audit**, not to modify system state.
+A curated collection of **small, safe and practical system utilities**
+for Ubuntu and Linux.
 
----
+The project focuses on **inspection, diagnostics and developer-oriented
+maintenance**, following a conservative philosophy:
+
+-   **Read-only by default**
+-   **Explicit opt-in for state-changing operations**
+-   **Minimal dependencies**
+-   **Predictable CLI behaviour**
+
+The goal is to provide tools that solve everyday Linux problems without
+becoming a full system management framework.
+
+------------------------------------------------------------------------
 
 ## Philosophy
-- **Safety first**: destructive actions are opt-in and limited to regenerable artifacts.
-- **Dry-run by default**: nothing is removed unless `--apply` is explicitly provided.
-- **No privilege escalation**
-- **No system modification outside user-controlled paths**
 
-If a tool could be dangerous, it does not belong here.
+This repository intentionally favors **small, composable utilities**
+over large automation suites.
 
----
+Core principles:
+
+-   Safety first
+-   Read-only whenever possible
+-   Explicit confirmation before destructive actions
+-   Deterministic behaviour
+-   No hidden privilege escalation
+-   User-controlled scope
+
+If a command changes system state, it should do so only after an
+explicit user request.
+
+------------------------------------------------------------------------
 
 ## Install
 
-```bash
+``` bash
 git clone https://github.com/gcomneno/ubuntu-system-tools
 cd ubuntu-system-tools
 make install PREFIX=$HOME/.local
 ```
 
 Uninstall:
-```bash
+
+``` bash
 make uninstall PREFIX=$HOME/.local
 ```
 
-## Config
-Create a local config (not tracked by git):
-```bash
+------------------------------------------------------------------------
+
+## Quick Examples
+
+Inspect recent security-related events:
+
+``` bash
+security-health --since "24 hours ago"
+```
+
+Find where a dependency or identifier is used:
+
+``` bash
+who-uses scan requests
+```
+
+Preview regenerable developer artifacts:
+
+``` bash
+hdd_cleanup
+```
+
+Diagnose a CUPS printer queue:
+
+``` bash
+printer-doctor doctor
+```
+
+Recover a disabled CUPS queue:
+
+``` bash
+printer-doctor repair
+```
+
+------------------------------------------------------------------------
+
+## Configuration
+
+Create a local configuration:
+
+``` bash
 make init-config
 nano ~/.config/ubuntu-system-tools/config.env
 ```
 
-Then, before running tools:
-```bash
+Load it:
+
+``` bash
 set -a
 source ~/.config/ubuntu-system-tools/config.env
 set +a
 ```
 
----
+------------------------------------------------------------------------
 
-## Tools
+## Included tools
 
 ### `hdd_cleanup`
 
-Cleanup helper for developer workspaces: finds and (optionally) removes **regenerable artifacts** such as `target/`, `node_modules/`, `.venv/`, and common Python caches.
+Safely identifies regenerable developer artifacts such as
+`node_modules/`, `.venv/`, `target/` and common caches.
 
-⚠️ **Safety model**:
-- Default is **dry-run** (no deletion).
-- Deletion requires explicit `--apply`.
-- Intended for **dev directories** (e.g. `$HOME/Progetti`), not system paths.
-
-Docs are embedded in the tool:
-```bash
-bin/hdd_cleanup --help-md
-```
-
----
+-   Dry-run by default
+-   `--apply` required for deletion
+-   Intended for developer workspaces
 
 ### `who-uses`
 
-Scans projects and the system to find **references to a given term** (e.g. a package name, binary, or identifier).
+Find where a package, dependency, binary or identifier is referenced.
 
-It performs:
-- project-wide text scans (dependencies + code/configs)
-- best-effort system inspection (pip, PATH, systemd)
+Features:
 
-All operations are **read-only**.
+-   project scanning
+-   dependency inspection
+-   optional system inspection
+-   JSON output
+-   read-only operation
 
----
+### `security-health`
 
-## Usage
+Inspect recent security-related events from the local system journal.
 
-```bash
-who-uses scan <term> [--include-venv] [--no-system] [--no-projects]
-```
+Features:
 
-Example:
-```
-who-uses scan requests
-```
+-   sudo activity
+-   login/logout events
+-   kernel warnings
+-   optional output redaction
 
-## Configuration (optional)
-All configuration is done via environment variables:
+### `printer-doctor`
 
-PROJECTS_DIR
-Default: $HOME/Progetti
+Vendor-agnostic diagnostics and recovery for CUPS printer queues.
 
-TOWER_BASE
-Default: $HOME/Documents/tower-notes
+Features:
 
-LOG_DIR
-Default: $TOWER_BASE/tower/logs
+-   inspect CUPS scheduler
+-   inspect configured printers
+-   inspect queues
+-   detect disabled queues
+-   list pending jobs
+-   recover queues explicitly
+-   optional cancellation of stuck jobs after confirmation
 
-Logs are never written inside the repository.
+Non-goals:
+
+-   cartridge cleaning
+-   nozzle checks
+-   vendor-specific maintenance
+-   proprietary driver management
+
+------------------------------------------------------------------------
 
 ## Requirements
-- Bash
-- ripgrep (rg)
-- python3 (for pip inspection)
-- systemd (optional, best-effort inspection)
 
-## What this repo does NOT do
-- No installs
-- No removals by default (cleanup actions are opt-in, e.g. `hdd_cleanup --apply`)
-- No service management
-- No privilege escalation
-- No system modification
+-   Bash
+-   ripgrep (`rg`)
+-   python3
+-   systemd (optional)
+-   CUPS (only for `printer-doctor`)
 
-If you are looking for an automation framework, this is not it.
+------------------------------------------------------------------------
+
+## Design goals
+
+Every utility should be:
+
+-   small
+-   understandable
+-   scriptable
+-   deterministic
+-   safe by default
+
+Whenever practical, tools expose self-contained documentation via
+`--help-md`.
+
+------------------------------------------------------------------------
+
+## What this repository does NOT do
+
+-   No automatic installs
+-   No destructive actions by default
+-   No service management
+-   No hidden privilege escalation
+-   No unsafe system modifications
+
+If you are looking for an automation framework, this is intentionally
+not it.
+
+------------------------------------------------------------------------
 
 ## Status
+
 Stable, intentionally small, and evolving slowly.
 
-Contributions are welcome only if they preserve the safety and minimalism principles.
+Contributions are welcome if they preserve the project's safety,
+simplicity and determinism.
 
-## JSON output (v1)
+------------------------------------------------------------------------
 
-`who-uses scan <term> --json` prints **JSON only** (no logs, no human text).
+## JSON output (who-uses)
 
-Security guarantees:
-- **No absolute paths**
-- **No matched text** (only line/column)
-- **Deterministic output** (stable ordering)
-- **Projects-only** (system scan disabled in JSON mode)
+`who-uses scan <term> --json` emits deterministic JSON with:
 
-Exit codes in `--json` mode:
-- `0` = no hits
-- `1` = hits found
-- `2` = operational error (JSON error object printed)
+-   no absolute paths
+-   no matched text
+-   projects-only scanning
+-   stable ordering
 
-Schema (v1):
-```json
-- `schema`: string (`who-uses-json-v1`)
-- `cmd`: string
-- `term`: string
-- `options`:
-  - `deps_only`: boolean
-  - `include_venv`: boolean
-  - `projects_only`: boolean (always `true` in JSON mode)
-- `results[]`:
-  - `project`: string (relative to `PROJECTS_DIR`, or `"."` if at root)
-  - `files[]`:
-    - `path`: string (relative to the project)
-    - `matches[]`:
-      - `line`: number (1-based)
-      - `column`: number (1-based)
-- `summary`:
-  - `projects_with_hits`: number
-  - `files_with_hits`: number
-  - `total_matches`: number
-```
+Exit codes:
 
----
+-   `0` = no hits
+-   `1` = hits found
+-   `2` = operational error
+
+------------------------------------------------------------------------
 
 ## Security note
 
-This tool is read-only and performs no network activity.  
-Output may contain sensitive local system information (usernames, IP addresses, service names).  
-Review output before sharing publicly.
+These tools perform only local operations.
 
----
+Some commands may display sensitive local information (usernames,
+hostnames, IP addresses, service names). Review output before sharing it
+publicly.
+
+------------------------------------------------------------------------
 
 ## Policy
-See **POLICY.md**. Tools must be idempotent and deterministic.
+
+See `POLICY.md`.
