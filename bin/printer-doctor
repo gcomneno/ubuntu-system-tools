@@ -1,0 +1,283 @@
+#!/usr/bin/env bash
+: <<'PRINTER_DOCTOR_MD'
+# printer-doctor
+
+`printer-doctor` is a small, vendor-agnostic CUPS queue diagnostic and recovery tool.
+
+## Safety model
+
+Default commands are read-only.
+
+Mutating actions are limited to explicit queue recovery:
+
+- `cupsenable`
+- `cupsaccept`
+- optional `cancel -a`, only after confirmation
+
+## Scope
+
+- Inspect CUPS scheduler status
+- Detect default printer
+- Show queue status
+- Show pending jobs
+- Detect disabled queues
+- Re-enable CUPS queues
+
+## Non-goals
+
+- No cartridge cleaning
+- No nozzle check
+- No vendor-specific maintenance
+- No driver installation
+- No printer model-specific behavior
+PRINTER_DOCTOR_MD
+
+set -euo pipefail
+IFS=$'\n\t'
+
+die(){ echo "ERRORE: $*" >&2; exit 2; }
+warn(){ echo "WARN: $*" >&2; }
+
+usage() {
+  cat <<'USAGE'
+NAME
+  printer-doctor - vendor-agnostic CUPS queue diagnostics and recovery
+
+SYNOPSIS
+  printer-doctor <command> [printer]
+
+COMMANDS
+  status [printer]       Show CUPS and queue status
+  queue [printer]        Show pending jobs for a printer
+  repair [printer]       Re-enable queue and optionally cancel stuck jobs
+  doctor [printer]       Run status + queue diagnostics
+  help                   Show this help
+  --help-md              Print embedded Markdown documentation
+
+SAFETY
+  status, queue and doctor are read-only.
+  repair may run cupsenable/cupsaccept.
+  job cancellation always asks confirmation.
+
+EXIT CODES
+  0  OK
+  1  Findings detected
+  2  Usage or operational error
+USAGE
+}
+
+print_help_md() {
+  awk '
+    BEGIN { p=0 }
+    /^: <<'\''PRINTER_DOCTOR_MD'\''$/ { p=1; next }
+    p && /^PRINTER_DOCTOR_MD$/ { exit }
+    p { print }
+  ' "$0"
+}
+
+need_cmd(){ command -v "$1" >/dev/null 2>&1 || die "comando mancante: $1"; }
+
+default_printer() {
+  lpstat -d 2>/dev/null | sed -E 's/^.*: //'
+}
+
+resolve_printer() {
+  local printer="${1:-}"
+
+  if [[ -n "$printer" ]]; then
+    echo "$printer"
+    return 0
+  fi
+
+  printer="$(default_printer || true)"
+  [[ -n "$printer" ]] || die "nessuna stampante indicata e nessuna stampante predefinita trovata"
+
+  echo "$printer"
+}
+
+cups_scheduler_status() {
+  if lpstat -r 2>/dev/null | grep -qi 'scheduler.*running\|lo scheduler è in funzione'; then
+    echo "OK: CUPS scheduler running"
+    return 0
+  fi
+
+  echo "FAIL: CUPS scheduler not running"
+  return 1
+}
+
+printer_exists() {
+  local printer="$1"
+  lpstat -p "$printer" >/dev/null 2>&1
+}
+
+queue_enabled() {
+  local printer="$1"
+
+  if lpstat -p "$printer" 2>/dev/null | grep -qi 'disabled\|disabilitata'; then
+    return 1
+  fi
+
+  return 0
+}
+
+show_status() {
+  local printer
+  printer="$(resolve_printer "${1:-}")"
+
+  need_cmd lpstat
+
+  local rc=0
+
+  echo "=== PRINTER DOCTOR: STATUS ==="
+  echo "Printer: $printer"
+  echo
+
+  cups_scheduler_status || rc=1
+
+  if printer_exists "$printer"; then
+    echo "OK: printer exists in CUPS"
+  else
+    echo "FAIL: printer not found in CUPS: $printer"
+    return 1
+  fi
+
+  if queue_enabled "$printer"; then
+    echo "OK: queue enabled"
+  else
+    echo "FAIL: queue disabled"
+    rc=1
+  fi
+
+  echo
+  echo ">>> lpstat -p"
+  lpstat -p "$printer" || true
+
+  echo
+  echo ">>> lpstat -v"
+  lpstat -v "$printer" || true
+
+  return "$rc"
+}
+
+show_queue() {
+  local printer
+  printer="$(resolve_printer "${1:-}")"
+
+  need_cmd lpstat
+
+  echo "=== PRINTER DOCTOR: QUEUE ==="
+  echo "Printer: $printer"
+  echo
+
+  if ! printer_exists "$printer"; then
+    echo "FAIL: printer not found in CUPS: $printer"
+    return 1
+  fi
+
+  local jobs
+  jobs="$(lpstat -o "$printer" 2>/dev/null || true)"
+
+  if [[ -n "$jobs" ]]; then
+    echo "$jobs"
+    return 1
+  fi
+
+  echo "OK: no pending jobs"
+  return 0
+}
+
+repair_queue() {
+  local printer
+  printer="$(resolve_printer "${1:-}")"
+
+  need_cmd lpstat
+  need_cmd cupsenable
+  need_cmd cupsaccept
+  need_cmd cancel
+
+  echo "=== PRINTER DOCTOR: REPAIR ==="
+  echo "Printer: $printer"
+  echo
+
+  if ! printer_exists "$printer"; then
+    die "printer not found in CUPS: $printer"
+  fi
+
+  echo ">>> Current queue status"
+  lpstat -p "$printer" || true
+  echo
+
+  local jobs
+  jobs="$(lpstat -o "$printer" 2>/dev/null || true)"
+
+  if [[ -n "$jobs" ]]; then
+    echo ">>> Pending jobs"
+    echo "$jobs"
+    echo
+    read -r -p "Cancel all pending jobs for $printer? [s/N] " answer
+
+    case "$answer" in
+      s|S|si|SI|sì|SÌ|y|Y|yes|YES)
+        echo "Cancelling pending jobs..."
+        cancel -a "$printer" || warn "cancel failed"
+        ;;
+      *)
+        echo "Keeping pending jobs."
+        ;;
+    esac
+    echo
+  else
+    echo "OK: no pending jobs"
+    echo
+  fi
+
+  echo "Re-enabling queue..."
+  sudo cupsenable "$printer"
+  sudo cupsaccept "$printer"
+
+  echo
+  echo ">>> Final status"
+  lpstat -p "$printer" || true
+  lpstat -o "$printer" 2>/dev/null || true
+}
+
+doctor() {
+  local printer="${1:-}"
+  local rc=0
+
+  show_status "$printer" || rc=1
+  echo
+  show_queue "$printer" || rc=1
+
+  return "$rc"
+}
+
+case "${1:-}" in
+  status)
+    shift
+    show_status "${1:-}"
+    ;;
+  queue)
+    shift
+    show_queue "${1:-}"
+    ;;
+  repair)
+    shift
+    repair_queue "${1:-}"
+    ;;
+  doctor)
+    shift
+    doctor "${1:-}"
+    ;;
+  --help-md)
+    print_help_md
+    ;;
+  help|-h|--help|"")
+    usage
+    [[ "${1:-}" == "" ]] && exit 2 || exit 0
+    ;;
+  *)
+    usage >&2
+    die "comando sconosciuto: $1"
+    ;;
+esac
