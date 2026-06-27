@@ -77,6 +77,12 @@ Diagnose a CUPS printer queue:
 printer-doctor doctor
 ```
 
+List configured CUPS printers:
+
+``` bash
+printer-doctor list
+```
+
 Recover a disabled CUPS queue:
 
 ``` bash
@@ -145,6 +151,7 @@ Vendor-agnostic diagnostics and recovery for CUPS printer queues.
 Features:
 
 -   inspect CUPS scheduler
+-   list configured printers
 -   inspect configured printers
 -   inspect queues
 -   detect disabled queues
