@@ -6,10 +6,10 @@ for Ubuntu and Linux.
 The project focuses on **inspection, diagnostics and developer-oriented
 maintenance**, following a conservative philosophy:
 
--   **Read-only by default**
--   **Explicit opt-in for state-changing operations**
--   **Minimal dependencies**
--   **Predictable CLI behaviour**
+**Read-only by default**
+**Explicit opt-in for state-changing operations**
+**Minimal dependencies**
+**Predictable CLI behaviour**
 
 The goal is to provide tools that solve everyday Linux problems without
 becoming a full system management framework.
@@ -23,12 +23,12 @@ over large automation suites.
 
 Core principles:
 
--   Safety first
--   Read-only whenever possible
--   Explicit confirmation before destructive actions
--   Deterministic behaviour
--   No hidden privilege escalation
--   User-controlled scope
+- Safety first
+- Read-only whenever possible
+- Explicit confirmation before destructive actions
+- Deterministic behaviour
+- No hidden privilege escalation
+- User-controlled scope
 
 If a command changes system state, it should do so only after an
 explicit user request.
@@ -117,9 +117,9 @@ set +a
 Safely identifies regenerable developer artifacts such as
 `node_modules/`, `.venv/`, `target/` and common caches.
 
--   Dry-run by default
--   `--apply` required for deletion
--   Intended for developer workspaces
+- Dry-run by default
+- `--apply` required for deletion
+- Intended for developer workspaces
 
 ### `who-uses`
 
@@ -127,11 +127,11 @@ Find where a package, dependency, binary or identifier is referenced.
 
 Features:
 
--   project scanning
--   dependency inspection
--   optional system inspection
--   JSON output
--   read-only operation
+- project scanning
+- dependency inspection
+- optional system inspection
+- JSON output
+- read-only operation
 
 ### `security-health`
 
@@ -139,10 +139,10 @@ Inspect recent security-related events from the local system journal.
 
 Features:
 
--   sudo activity
--   login/logout events
--   kernel warnings
--   optional output redaction
+- sudo activity
+- login/logout events
+- kernel warnings
+- optional output redaction
 
 ### `printer-doctor`
 
@@ -150,31 +150,30 @@ Vendor-agnostic diagnostics and recovery for CUPS printer queues.
 
 Features:
 
--   inspect CUPS scheduler
--   list configured printers
--   inspect configured printers
--   inspect queues
--   detect disabled queues
--   list pending jobs
--   recover queues explicitly
--   optional cancellation of stuck jobs after confirmation
+- inspect CUPS scheduler
+- list configured printers
+- inspect configured printers
+- inspect queues
+- detect disabled queues
+- list pending jobs
+- recover queues explicitly
+- optional cancellation of stuck jobs after confirmation
 
-Non-goals:
+N goals:  cartridge cleaning
 
--   cartridge cleaning
--   nozzle checks
--   vendor-specific maintenance
--   proprietary driver management
+- nozzle ecks
+- vendor ecific maintenance
+- proprietary driver management
 
 ------------------------------------------------------------------------
 
 ## Requirements
 
--   Bash
--   ripgrep (`rg`)
--   python3
--   systemd (optional)
--   CUPS (only for `printer-doctor`)
+- Bash
+- ripgrep (`rg`)
+- python3
+- systemd (optional)
+- CUPS (only for `printer-doctor`)
 
 ------------------------------------------------------------------------
 
@@ -182,11 +181,11 @@ Non-goals:
 
 Every utility should be:
 
--   small
--   understandable
--   scriptable
--   deterministic
--   safe by default
+- small
+- understandable
+- scriptable
+- deterministic
+- safe by default
 
 Whenever practical, tools expose self-contained documentation via
 `--help-md`.
@@ -195,11 +194,11 @@ Whenever practical, tools expose self-contained documentation via
 
 ## What this repository does NOT do
 
--   No automatic installs
--   No destructive actions by default
--   No service management
--   No hidden privilege escalation
--   No unsafe system modifications
+- No automatic installs
+- No destructive actions by default
+- No service management
+- No hidden privilege escalation
+- No unsafe system modifications
 
 If you are looking for an automation framework, this is intentionally
 not it.
@@ -219,16 +218,16 @@ simplicity and determinism.
 
 `who-uses scan <term> --json` emits deterministic JSON with:
 
--   no absolute paths
--   no matched text
--   projects-only scanning
--   stable ordering
+- no absolute paths
+- no matched text
+- projects-only scanning
+- stable ordering
 
 Exit codes:
 
--   `0` = no hits
--   `1` = hits found
--   `2` = operational error
+- `0` = no hits
+- `1` = hits found
+- `2` = operational error
 
 ------------------------------------------------------------------------
 
