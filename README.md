@@ -1,6 +1,6 @@
 # ubuntu-system-tools
 
-A curated collection of **small, safe and practical system utilities**
+A small collection of **paranoid, safety-first system utilities**
 for Ubuntu and Linux.
 
 The project focuses on **inspection, diagnostics and developer-oriented
