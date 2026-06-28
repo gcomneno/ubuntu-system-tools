@@ -1,0 +1,172 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="${HOME}/Progetti"
+MAX_DEPTH=6
+MIN_BYTES=0
+SUMMARY=1
+
+die() {
+  echo "ERROR: $*" >&2
+  exit 2
+}
+
+need_cmd() {
+  command -v "$1" >/dev/null 2>&1 || die "missing command: $1"
+}
+
+usage() {
+  cat <<'USAGE'
+NAME
+  garbage-collector - read-only scanner for removable development artifacts
+
+SYNOPSIS
+  garbage-collector [ROOT] [options]
+
+OPTIONS
+  --max-depth N      Limit directory traversal depth. Default: 6
+  --min-bytes N      Show only entries >= N bytes. Default: 0
+  --no-summary       Do not print total potentially reclaimable space
+  -h, --help         Show this help
+
+SAFETY
+  Read-only. Does not delete anything.
+USAGE
+}
+
+hr_bytes() {
+  local bytes="${1:-0}"
+
+  if command -v numfmt >/dev/null 2>&1; then
+    numfmt --to=iec --suffix=B "$bytes"
+  else
+    echo "${bytes}B"
+  fi
+}
+
+kind_for_path() {
+  local path="$1"
+  local base
+
+  base="$(basename -- "$path")"
+
+  case "$base" in
+    .venv|venv)
+      echo "venv"
+      ;;
+    node_modules)
+      echo "node"
+      ;;
+    target)
+      echo "rust"
+      ;;
+    __pycache__|.pytest_cache|.mypy_cache|.ruff_cache|.tox)
+      echo "python-cache"
+      ;;
+    build|dist)
+      echo "build-output"
+      ;;
+    *.egg-info)
+      echo "python-package"
+      ;;
+    *)
+      echo "artifact"
+      ;;
+  esac
+}
+
+parse_args() {
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --max-depth)
+        [[ $# -ge 2 ]] || die "--max-depth requires a value"
+        MAX_DEPTH="$2"
+        shift 2
+        ;;
+      --min-bytes)
+        [[ $# -ge 2 ]] || die "--min-bytes requires a value"
+        MIN_BYTES="$2"
+        shift 2
+        ;;
+      --no-summary)
+        SUMMARY=0
+        shift
+        ;;
+      -h|--help)
+        usage
+        exit 0
+        ;;
+      --*)
+        die "unknown option: $1"
+        ;;
+      *)
+        ROOT="$1"
+        shift
+        ;;
+    esac
+  done
+
+  [[ "$MAX_DEPTH" =~ ^[0-9]+$ ]] || die "--max-depth must be a non-negative integer"
+  [[ "$MIN_BYTES" =~ ^[0-9]+$ ]] || die "--min-bytes must be a non-negative integer"
+  [[ -d "$ROOT" ]] || die "root directory does not exist: $ROOT"
+}
+
+main() {
+  parse_args "$@"
+
+  need_cmd find
+  need_cmd du
+  need_cmd sort
+  need_cmd cut
+  need_cmd awk
+
+  local tmp
+  tmp="$(mktemp)"
+  trap 'rm -f "${tmp:-}"' EXIT
+
+  while IFS= read -r -d '' path; do
+    local bytes
+    local kind
+
+    bytes="$(du -sb -- "$path" | cut -f1)"
+    [[ "$bytes" -ge "$MIN_BYTES" ]] || continue
+
+    kind="$(kind_for_path "$path")"
+    printf "%s\t%s\t%s\n" "$bytes" "$kind" "$path" >> "$tmp"
+  done < <(
+    find "$ROOT" -maxdepth "$MAX_DEPTH" \
+      -type d \( \
+        -name ".venv" -o \
+        -name "venv" -o \
+        -name "node_modules" -o \
+        -name "target" -o \
+        -name "__pycache__" -o \
+        -name ".pytest_cache" -o \
+        -name ".mypy_cache" -o \
+        -name ".ruff_cache" -o \
+        -name ".tox" -o \
+        -name "build" -o \
+        -name "dist" -o \
+        -name "*.egg-info" \
+      \) -prune -print0
+  )
+
+  if [[ ! -s "$tmp" ]]; then
+    echo "No removable development artifacts found."
+    exit 0
+  fi
+
+  printf "%-10s %-16s %s\n" "SIZE" "KIND" "PATH"
+
+  sort -nr -k1,1 "$tmp" | while IFS=$'\t' read -r bytes kind path; do
+    printf "%-10s %-16s %s\n" "$(hr_bytes "$bytes")" "$kind" "$path"
+  done
+
+  if [[ "$SUMMARY" == "1" ]]; then
+    local total
+    total="$(awk -F '\t' '{ s += $1 } END { print s + 0 }' "$tmp")"
+    printf "\nPotentially reclaimable: %s\n" "$(hr_bytes "$total")"
+  fi
+}
+
+main "$@"

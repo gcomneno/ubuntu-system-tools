@@ -71,6 +71,12 @@ Preview regenerable developer artifacts:
 hdd_cleanup
 ```
 
+Audit removable development artifacts without deleting anything:
+
+``` bash
+garbage-collector ~/Progetti --max-depth 4
+```
+
 Diagnose a CUPS printer queue:
 
 ``` bash
@@ -120,6 +126,16 @@ Safely identifies regenerable developer artifacts such as
 -   Dry-run by default
 -   `--apply` required for deletion
 -   Intended for developer workspaces
+
+### `garbage-collector`
+
+Read-only scanner for removable development artifacts such as `.venv/`,
+`node_modules/`, `target/`, Python caches and build output.
+
+-   Audit-only
+-   No deletion mode
+-   Reports size per artifact
+-   Prints total potentially reclaimable space
 
 ### `who-uses`
 
