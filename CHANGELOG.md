@@ -3,7 +3,10 @@
 All notable changes to this project will be documented in this file.
 
 ## Unreleased
-- (nothing yet)
+
+### Added
+- Add `bulk-epub-to-azw3` for bulk EPUB to AZW3 conversion using Calibre.
+- Add selftest coverage for `bulk-epub-to-azw3`, including dry-run, invalid EPUB detection, nested output paths, and skip-existing behavior.
 
 ## v0.1.3
 
