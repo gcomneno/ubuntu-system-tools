@@ -211,6 +211,14 @@ bin/bulk-epub-to-azw3 --src ./epub --out ./kindle
 
 The tool validates EPUB files before conversion, preserves subdirectories, skips existing AZW3 files by default, and supports `--force` to overwrite existing output files.
 
+Preflight EPUB metadata without converting:
+
+```bash
+bin/bulk-epub-to-azw3 --preflight
+```
+
+The preflight report includes the OPF package path, title, creator, language, identifier, cover detection, spine item count, and basic warnings for missing metadata.
+
 Dependencies:
 
 ```bash

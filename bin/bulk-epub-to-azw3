@@ -6,39 +6,42 @@ PROGRAM_NAME="$(basename "$0")"
 
 usage() {
   cat <<EOF
-Uso:
-  $PROGRAM_NAME [--src CARTELLA_INPUT] [--out CARTELLA_OUTPUT] [--dry-run] [--force]
+Usage:
+  $PROGRAM_NAME [--src INPUT_DIR] [--out OUTPUT_DIR] [--dry-run] [--force]
+  $PROGRAM_NAME [--src INPUT_DIR] [--preflight]
 
-Descrizione:
-  Converte in bulk file EPUB in AZW3 usando Calibre / ebook-convert.
+Description:
+  Bulk-convert EPUB files to AZW3 using Calibre / ebook-convert.
 
-Default:
-  --src      directory corrente da cui viene lanciato lo script
-  --out      ./azw3 dentro la directory corrente
+Defaults:
+  --src      current working directory
+  --out      ./azw3 inside the current working directory
 
-Esempi:
+Examples:
   $PROGRAM_NAME --dry-run
   $PROGRAM_NAME
   $PROGRAM_NAME --src ./epub --out ./kindle --dry-run
   $PROGRAM_NAME --src ./epub --out ./kindle
   $PROGRAM_NAME --src ./epub --out ./kindle --force
+  $PROGRAM_NAME --src ./epub --preflight
 
-Opzioni:
-  --src       Cartella sorgente. Default: directory corrente
-  --out       Cartella destinazione. Default: ./azw3
-  --dry-run   Mostra cosa verrebbe fatto, senza convertire e senza creare output
-  --force     Sovrascrive eventuali file .azw3 già esistenti
-  -h, --help  Mostra questo aiuto
+Options:
+  --src        Source directory. Default: current working directory
+  --out        Output directory. Default: ./azw3
+  --dry-run    Show what would be converted without creating output
+  --force      Overwrite existing .azw3 files
+  --preflight  Inspect EPUB metadata without converting
+  -h, --help   Show this help
 EOF
 }
 
 die() {
-  echo "ERRORE: $*" >&2
+  echo "ERROR: $*" >&2
   exit 1
 }
 
 need_cmd() {
-  command -v "$1" >/dev/null 2>&1 || die "comando mancante: $1"
+  command -v "$1" >/dev/null 2>&1 || die "missing command: $1"
 }
 
 is_valid_epub() {
@@ -55,15 +58,180 @@ is_valid_epub() {
   return 0
 }
 
+epub_preflight_report() {
+  local file="$1"
+
+  python3 - "$file" <<'PYCODE'
+from __future__ import annotations
+
+import sys
+import zipfile
+import xml.etree.ElementTree as ET
+from pathlib import PurePosixPath
+
+
+CONTAINER_NS = {"c": "urn:oasis:names:tc:opendocument:xmlns:container"}
+OPF_NS = {
+    "opf": "http://www.idpf.org/2007/opf",
+    "dc": "http://purl.org/dc/elements/1.1/",
+}
+
+
+def local_name(tag: str) -> str:
+    if "}" in tag:
+        return tag.rsplit("}", 1)[1]
+    return tag
+
+
+def clean_text(value: str | None) -> str:
+    if value is None:
+        return ""
+    return " ".join(value.split())
+
+
+def first_dc_text(root: ET.Element, name: str) -> str:
+    for element in root.iter():
+        if local_name(element.tag) == name and element.tag.startswith("{http://purl.org/dc/elements/1.1/}"):
+            text = clean_text(element.text)
+            if text:
+                return text
+    return ""
+
+
+def find_opf_path(archive: zipfile.ZipFile) -> str:
+    container_xml = archive.read("META-INF/container.xml")
+    container = ET.fromstring(container_xml)
+    rootfile = container.find(".//c:rootfile", CONTAINER_NS)
+
+    if rootfile is None:
+        return ""
+
+    return rootfile.attrib.get("full-path", "").strip()
+
+
+def iter_manifest_items(root: ET.Element) -> list[ET.Element]:
+    return [element for element in root.iter() if local_name(element.tag) == "item"]
+
+
+def count_spine_items(root: ET.Element) -> int:
+    return sum(1 for element in root.iter() if local_name(element.tag) == "itemref")
+
+
+def detect_cover(root: ET.Element, opf_path: str, archive: zipfile.ZipFile) -> bool:
+    manifest_items = iter_manifest_items(root)
+
+    cover_id = ""
+
+    for element in root.iter():
+        if local_name(element.tag) == "meta" and element.attrib.get("name") == "cover":
+            cover_id = element.attrib.get("content", "").strip()
+            break
+
+    for item in manifest_items:
+        item_id = item.attrib.get("id", "")
+        href = item.attrib.get("href", "")
+        media_type = item.attrib.get("media-type", "")
+        properties = item.attrib.get("properties", "")
+
+        if cover_id and item_id == cover_id:
+            return True
+
+        if "cover-image" in properties.split():
+            return True
+
+        if media_type.startswith("image/") and "cover" in f"{item_id} {href}".lower():
+            return True
+
+        if media_type.startswith("image/") and href:
+            opf_dir = PurePosixPath(opf_path).parent
+            image_path = str(opf_dir / href)
+            if image_path in archive.namelist() and "cover" in image_path.lower():
+                return True
+
+    return False
+
+
+def main() -> int:
+    epub_path = sys.argv[1]
+
+    warnings: list[str] = []
+
+    try:
+        with zipfile.ZipFile(epub_path) as archive:
+            opf_path = find_opf_path(archive)
+
+            if not opf_path:
+                print("OPF: (missing)")
+                print("Title: (missing)")
+                print("Creator: (missing)")
+                print("Language: (missing)")
+                print("Identifier: (missing)")
+                print("Cover: no")
+                print("Spine items: 0")
+                print("Warnings:")
+                print("- missing OPF package path in META-INF/container.xml")
+                return 0
+
+            opf_root = ET.fromstring(archive.read(opf_path))
+
+            title = first_dc_text(opf_root, "title")
+            creator = first_dc_text(opf_root, "creator")
+            language = first_dc_text(opf_root, "language")
+            identifier = first_dc_text(opf_root, "identifier")
+            spine_items = count_spine_items(opf_root)
+            has_cover = detect_cover(opf_root, opf_path, archive)
+
+            if not title:
+                warnings.append("missing title")
+            if not creator:
+                warnings.append("missing creator")
+            if not language:
+                warnings.append("missing language")
+            if not identifier:
+                warnings.append("missing identifier")
+            if not has_cover:
+                warnings.append("cover not detected")
+            if spine_items == 0:
+                warnings.append("empty spine")
+
+            print(f"OPF: {opf_path}")
+            print(f"Title: {title or '(missing)'}")
+            print(f"Creator: {creator or '(missing)'}")
+            print(f"Language: {language or '(missing)'}")
+            print(f"Identifier: {identifier or '(missing)'}")
+            print(f"Cover: {'yes' if has_cover else 'no'}")
+            print(f"Spine items: {spine_items}")
+
+            if warnings:
+                print("Warnings:")
+                for warning in warnings:
+                    print(f"- {warning}")
+            else:
+                print("Warnings: none")
+
+            return 0
+
+    except (KeyError, ET.ParseError, zipfile.BadZipFile) as exc:
+        print("OPF: (unreadable)")
+        print(f"Warnings:\n- metadata audit failed: {exc}")
+        return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+PYCODE
+}
+
 SRC="$PWD"
 OUT="$PWD/azw3"
 DRY_RUN=0
 FORCE=0
+PREFLIGHT=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --src)
-      [[ $# -ge 2 ]] || die "manca il valore per --src"
+      [[ $# -ge 2 ]] || die "missing value for --src"
       SRC="$2"
       shift 2
       ;;
@@ -72,7 +240,7 @@ while [[ $# -gt 0 ]]; do
       shift
       ;;
     --out)
-      [[ $# -ge 2 ]] || die "manca il valore per --out"
+      [[ $# -ge 2 ]] || die "missing value for --out"
       OUT="$2"
       shift 2
       ;;
@@ -88,12 +256,16 @@ while [[ $# -gt 0 ]]; do
       FORCE=1
       shift
       ;;
+    --preflight)
+      PREFLIGHT=1
+      shift
+      ;;
     -h|--help)
       usage
       exit 0
       ;;
     *)
-      die "argomento sconosciuto: $1"
+      die "unknown argument: $1"
       ;;
   esac
 done
@@ -102,18 +274,26 @@ need_cmd find
 need_cmd realpath
 need_cmd unzip
 need_cmd grep
-need_cmd ebook-convert
 
-[[ -d "$SRC" ]] || die "la cartella sorgente non esiste: $SRC"
+if [[ "$PREFLIGHT" -eq 1 ]]; then
+  need_cmd python3
+fi
+
+if [[ "$PREFLIGHT" -eq 0 && "$DRY_RUN" -eq 0 ]]; then
+  need_cmd ebook-convert
+fi
+
+[[ -d "$SRC" ]] || die "source directory does not exist: $SRC"
 
 SRC="$(realpath "$SRC")"
 OUT="$(realpath -m "$OUT")"
 
-[[ "$SRC" != "$OUT" ]] || die "SRC e OUT non devono coincidere. Separiamo input e output come persone civili."
+[[ "$SRC" != "$OUT" ]] || die "SRC and OUT must not be the same directory."
 
 total=0
 valid=0
 invalid=0
+preflighted=0
 converted=0
 skipped=0
 failed=0
@@ -121,10 +301,12 @@ failed=0
 echo "SRC: $SRC"
 echo "OUT: $OUT"
 
-if [[ "$DRY_RUN" -eq 1 ]]; then
-  echo "Modalità: DRY-RUN"
+if [[ "$PREFLIGHT" -eq 1 ]]; then
+  echo "Mode: PREFLIGHT"
+elif [[ "$DRY_RUN" -eq 1 ]]; then
+  echo "Mode: DRY-RUN"
 else
-  echo "Modalità: CONVERSIONE REALE"
+  echo "Mode: REAL CONVERSION"
   mkdir -p "$OUT"
 fi
 
@@ -139,7 +321,7 @@ while IFS= read -r -d '' file; do
   echo "File: $rel"
 
   if ! is_valid_epub "$file"; then
-    echo "  INVALIDO: non sembra un EPUB valido"
+    echo "  INVALID: not a valid EPUB"
     invalid=$((invalid + 1))
     echo
     continue
@@ -147,8 +329,15 @@ while IFS= read -r -d '' file; do
 
   valid=$((valid + 1))
 
+  if [[ "$PREFLIGHT" -eq 1 ]]; then
+    epub_preflight_report "$file" | sed 's/^/  /'
+    preflighted=$((preflighted + 1))
+    echo
+    continue
+  fi
+
   if [[ -f "$dest" && "$FORCE" -eq 0 ]]; then
-    echo "  SKIP: esiste già: $dest"
+    echo "  SKIP: already exists: $dest"
     skipped=$((skipped + 1))
     echo
     continue
@@ -165,7 +354,7 @@ while IFS= read -r -d '' file; do
   tmp="${dest%.azw3}.tmp.$$.azw3"
   log="${dest%.azw3}.convert.log"
 
-  echo "  CONVERTO -> $dest"
+  echo "  CONVERT -> $dest"
 
   if ebook-convert "$file" "$tmp" >"$log" 2>&1; then
     mv -f "$tmp" "$dest"
@@ -175,23 +364,28 @@ while IFS= read -r -d '' file; do
   else
     rm -f "$tmp"
     failed=$((failed + 1))
-    echo "  FALLITO: vedi log: $log"
+    echo "  FAILED: see log: $log"
   fi
 
   echo
 done < <(find "$SRC" -type f -iname '*.epub' -not -path "$OUT/*" -print0)
 
-echo "Riepilogo:"
-echo "  EPUB trovati:   $total"
-echo "  EPUB validi:    $valid"
-echo "  EPUB invalidi:  $invalid"
-echo "  Convertiti:     $converted"
-echo "  Saltati:        $skipped"
-echo "  Falliti:        $failed"
+echo "Summary:"
+echo "  EPUB found:      $total"
+echo "  EPUB valid:      $valid"
+echo "  EPUB invalid:    $invalid"
+
+if [[ "$PREFLIGHT" -eq 1 ]]; then
+  echo "  Preflighted:     $preflighted"
+else
+  echo "  Converted:       $converted"
+  echo "  Skipped:         $skipped"
+  echo "  Failed:          $failed"
+fi
 
 if [[ "$DRY_RUN" -eq 1 ]]; then
   echo
-  echo "Dry-run completato. Se l'elenco è giusto, rilancia senza --dry-run."
+  echo "Dry-run completed. If the plan looks correct, run again without --dry-run."
 fi
 
 if [[ "$failed" -gt 0 ]]; then
