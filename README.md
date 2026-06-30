@@ -184,6 +184,41 @@ Non-goals:
 
 ------------------------------------------------------------------------
 
+### `bulk-epub-to-azw3`
+
+Bulk-convert EPUB files to AZW3 for Kindle using Calibre's `ebook-convert`.
+
+By default, the source directory is the current working directory and the output directory is `./azw3`.
+
+Dry-run from a directory containing EPUB files:
+
+```bash
+bin/bulk-epub-to-azw3 --dry-run
+```
+
+Run the real conversion:
+
+```bash
+bin/bulk-epub-to-azw3
+```
+
+Use explicit source and output directories:
+
+```bash
+bin/bulk-epub-to-azw3 --src ./epub --out ./kindle --dry-run
+bin/bulk-epub-to-azw3 --src ./epub --out ./kindle
+```
+
+The tool validates EPUB files before conversion, preserves subdirectories, skips existing AZW3 files by default, and supports `--force` to overwrite existing output files.
+
+Dependencies:
+
+```bash
+sudo apt update
+sudo apt install calibre unzip
+```
+
+
 ## Requirements
 
 -   Bash

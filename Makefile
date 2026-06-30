@@ -4,7 +4,7 @@ CONFIGFILE ?= $(CONFIGDIR)/config.env
 PREFIX ?= $(HOME)/.local
 BINDIR ?= $(PREFIX)/bin
 
-TOOLS := bin/hdd_cleanup bin/security-health bin/who-uses bin/printer-doctor bin/garbage-collector
+TOOLS := bin/hdd_cleanup bin/security-health bin/who-uses bin/printer-doctor bin/garbage-collector bin/bulk-epub-to-azw3
 
 .PHONY: init-config install uninstall check print-prefix install-system uninstall-system
 
@@ -49,3 +49,4 @@ check:
 	tests/selftest_hdd_cleanup.sh
 	tests/selftest_printer_doctor.sh
 	tests/selftest_garbage_collector.sh
+	tests/selftest_bulk_epub_to_azw3.sh

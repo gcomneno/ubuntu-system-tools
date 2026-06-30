@@ -1,0 +1,199 @@
+#!/usr/bin/env bash
+
+set -Eeuo pipefail
+
+PROGRAM_NAME="$(basename "$0")"
+
+usage() {
+  cat <<EOF
+Uso:
+  $PROGRAM_NAME [--src CARTELLA_INPUT] [--out CARTELLA_OUTPUT] [--dry-run] [--force]
+
+Descrizione:
+  Converte in bulk file EPUB in AZW3 usando Calibre / ebook-convert.
+
+Default:
+  --src      directory corrente da cui viene lanciato lo script
+  --out      ./azw3 dentro la directory corrente
+
+Esempi:
+  $PROGRAM_NAME --dry-run
+  $PROGRAM_NAME
+  $PROGRAM_NAME --src ./epub --out ./kindle --dry-run
+  $PROGRAM_NAME --src ./epub --out ./kindle
+  $PROGRAM_NAME --src ./epub --out ./kindle --force
+
+Opzioni:
+  --src       Cartella sorgente. Default: directory corrente
+  --out       Cartella destinazione. Default: ./azw3
+  --dry-run   Mostra cosa verrebbe fatto, senza convertire e senza creare output
+  --force     Sovrascrive eventuali file .azw3 già esistenti
+  -h, --help  Mostra questo aiuto
+EOF
+}
+
+die() {
+  echo "ERRORE: $*" >&2
+  exit 1
+}
+
+need_cmd() {
+  command -v "$1" >/dev/null 2>&1 || die "comando mancante: $1"
+}
+
+is_valid_epub() {
+  local file="$1"
+  local mimetype
+
+  unzip -tqq "$file" >/dev/null 2>&1 || return 1
+
+  mimetype="$(unzip -p "$file" mimetype 2>/dev/null || true)"
+  [[ "$mimetype" == "application/epub+zip" ]] || return 1
+
+  unzip -Z -1 "$file" 2>/dev/null | grep -qx 'META-INF/container.xml' || return 1
+
+  return 0
+}
+
+SRC="$PWD"
+OUT="$PWD/azw3"
+DRY_RUN=0
+FORCE=0
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --src)
+      [[ $# -ge 2 ]] || die "manca il valore per --src"
+      SRC="$2"
+      shift 2
+      ;;
+    --src=*)
+      SRC="${1#--src=}"
+      shift
+      ;;
+    --out)
+      [[ $# -ge 2 ]] || die "manca il valore per --out"
+      OUT="$2"
+      shift 2
+      ;;
+    --out=*)
+      OUT="${1#--out=}"
+      shift
+      ;;
+    --dry-run)
+      DRY_RUN=1
+      shift
+      ;;
+    --force)
+      FORCE=1
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      die "argomento sconosciuto: $1"
+      ;;
+  esac
+done
+
+need_cmd find
+need_cmd realpath
+need_cmd unzip
+need_cmd grep
+need_cmd ebook-convert
+
+[[ -d "$SRC" ]] || die "la cartella sorgente non esiste: $SRC"
+
+SRC="$(realpath "$SRC")"
+OUT="$(realpath -m "$OUT")"
+
+[[ "$SRC" != "$OUT" ]] || die "SRC e OUT non devono coincidere. Separiamo input e output come persone civili."
+
+total=0
+valid=0
+invalid=0
+converted=0
+skipped=0
+failed=0
+
+echo "SRC: $SRC"
+echo "OUT: $OUT"
+
+if [[ "$DRY_RUN" -eq 1 ]]; then
+  echo "Modalità: DRY-RUN"
+else
+  echo "Modalità: CONVERSIONE REALE"
+  mkdir -p "$OUT"
+fi
+
+echo
+
+while IFS= read -r -d '' file; do
+  total=$((total + 1))
+
+  rel="${file#$SRC/}"
+  dest="$OUT/${rel%.*}.azw3"
+
+  echo "File: $rel"
+
+  if ! is_valid_epub "$file"; then
+    echo "  INVALIDO: non sembra un EPUB valido"
+    invalid=$((invalid + 1))
+    echo
+    continue
+  fi
+
+  valid=$((valid + 1))
+
+  if [[ -f "$dest" && "$FORCE" -eq 0 ]]; then
+    echo "  SKIP: esiste già: $dest"
+    skipped=$((skipped + 1))
+    echo
+    continue
+  fi
+
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    echo "  DRY: ebook-convert \"$file\" \"$dest\""
+    echo
+    continue
+  fi
+
+  mkdir -p "$(dirname "$dest")"
+
+  tmp="${dest%.azw3}.tmp.$$.azw3"
+  log="${dest%.azw3}.convert.log"
+
+  echo "  CONVERTO -> $dest"
+
+  if ebook-convert "$file" "$tmp" >"$log" 2>&1; then
+    mv -f "$tmp" "$dest"
+    rm -f "$log"
+    converted=$((converted + 1))
+    echo "  OK"
+  else
+    rm -f "$tmp"
+    failed=$((failed + 1))
+    echo "  FALLITO: vedi log: $log"
+  fi
+
+  echo
+done < <(find "$SRC" -type f -iname '*.epub' -not -path "$OUT/*" -print0)
+
+echo "Riepilogo:"
+echo "  EPUB trovati:   $total"
+echo "  EPUB validi:    $valid"
+echo "  EPUB invalidi:  $invalid"
+echo "  Convertiti:     $converted"
+echo "  Saltati:        $skipped"
+echo "  Falliti:        $failed"
+
+if [[ "$DRY_RUN" -eq 1 ]]; then
+  echo
+  echo "Dry-run completato. Se l'elenco è giusto, rilancia senza --dry-run."
+fi
+
+if [[ "$failed" -gt 0 ]]; then
+  exit 2
+fi
