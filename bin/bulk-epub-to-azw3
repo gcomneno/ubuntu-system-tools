@@ -133,7 +133,7 @@ echo
 while IFS= read -r -d '' file; do
   total=$((total + 1))
 
-  rel="${file#$SRC/}"
+  rel="${file#"$SRC"/}"
   dest="$OUT/${rel%.*}.azw3"
 
   echo "File: $rel"
