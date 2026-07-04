@@ -26,6 +26,7 @@ Examples:
   $PROGRAM_NAME
   $PROGRAM_NAME --from epub --to azw3
   $PROGRAM_NAME --from mobi --to epub --src ./mobi --out ./epub
+  $PROGRAM_NAME --from epub --to azw3,epub,txt --src ./epub
   $PROGRAM_NAME --target kindle --src ./epub --dry-run
   $PROGRAM_NAME --target archive --src ./epub --out ./archive
   $PROGRAM_NAME --src ./epub --out ./kindle --dry-run
@@ -36,7 +37,7 @@ Examples:
 Options:
   --src              Source directory. Default: current working directory
   --from             Source ebook format extension. Default: epub
-  --to               Target ebook format extension. Default: azw3
+  --to               Target ebook format extension, or comma-separated list. Default: azw3
   --target           Curated conversion target: kindle, kobo, archive, text
   --out              Output directory. Default: ./<to>
   --dry-run          Show what would be converted without creating output
@@ -146,8 +147,43 @@ validate_format_allowlist() {
     die "unsupported source format: $FROM"
   fi
 
-  if ! format_supported "$TO" "${SUPPORTED_TO_FORMATS[@]}"; then
-    die "unsupported target format: $TO"
+  local format
+  for format in "${TO_FORMATS[@]}"; do
+    if ! format_supported "$format" "${SUPPORTED_TO_FORMATS[@]}"; then
+      die "unsupported target format: $format"
+    fi
+  done
+}
+
+parse_to_formats() {
+  local raw="${1// /}"
+  local item
+  local normalized
+
+  TO_FORMATS=()
+
+  if [[ -z "$raw" ]]; then
+    die "empty --to value"
+  fi
+
+  IFS=',' read -r -a _to_parts <<< "$raw"
+
+  for item in "${_to_parts[@]}"; do
+    [[ -n "$item" ]] || die "empty entry in --to list"
+    normalized="$(normalize_format "$item")"
+    TO_FORMATS+=("$normalized")
+  done
+}
+
+output_root_for_format() {
+  local fmt="$1"
+
+  if [[ "$MULTI_TARGET" -eq 0 ]]; then
+    printf '%s' "$OUT"
+  elif [[ "$OUT_EXPLICIT" -eq 0 ]]; then
+    realpath -m "$PWD/$fmt"
+  else
+    realpath -m "$OUT/$fmt"
   fi
 }
 
@@ -481,6 +517,8 @@ OUT_EXPLICIT=0
 FROM=epub
 TO=azw3
 TO_EXPLICIT=0
+TO_FORMATS=()
+MULTI_TARGET=0
 TARGET=""
 DRY_RUN=0
 FORCE=0
@@ -606,13 +644,26 @@ if [[ -n "$TARGET" && "$TO_EXPLICIT" -eq 1 ]]; then
 fi
 
 FROM="$(normalize_format "$FROM")"
-TO="$(normalize_format "$TO")"
+parse_to_formats "$TO"
+TO="$(IFS=,; echo "${TO_FORMATS[*]}")"
 INVALID_REASON="$(invalid_source_message)"
 
 validate_format_allowlist
 
+if [[ ${#TO_FORMATS[@]} -gt 1 ]]; then
+  MULTI_TARGET=1
+fi
+
+if [[ "$MULTI_TARGET" -eq 1 && -n "$TARGET" ]]; then
+  die "--target cannot be combined with multiple --to formats"
+fi
+
 if [[ "$OUT_EXPLICIT" -eq 0 ]]; then
-  OUT="$PWD/$TO"
+  if [[ "$MULTI_TARGET" -eq 1 ]]; then
+    OUT="$PWD"
+  else
+    OUT="$PWD/${TO_FORMATS[0]}"
+  fi
 fi
 
 need_cmd find
@@ -658,7 +709,11 @@ if [[ "$QUARANTINE_ENABLED" -eq 1 ]]; then
   QUARANTINE="$(realpath -m "$QUARANTINE")"
 fi
 
-[[ "$SRC" != "$OUT" ]] || die "SRC and OUT must not be the same directory."
+_fmt_check=""
+for _fmt_check in "${TO_FORMATS[@]}"; do
+  [[ "$SRC" != "$(output_root_for_format "$_fmt_check")" ]] || die "SRC and OUT must not be the same directory."
+done
+unset _fmt_check
 
 total=0
 valid=0
@@ -669,12 +724,24 @@ skipped=0
 failed=0
 
 echo "SRC: $SRC"
-echo "OUT: $OUT"
+if [[ "$MULTI_TARGET" -eq 1 ]]; then
+  _out_roots=()
+  for _fmt in "${TO_FORMATS[@]}"; do
+    _out_roots+=("$(output_root_for_format "$_fmt")")
+  done
+  echo "OUT: $(IFS=,; echo "${_out_roots[*]}")"
+  unset _out_roots _fmt
+else
+  echo "OUT: $OUT"
+fi
 echo "FROM: $FROM"
 if [[ -n "$TARGET" ]]; then
   echo "TARGET: $TARGET"
 fi
 echo "TO: $TO"
+if [[ "$MULTI_TARGET" -eq 1 ]]; then
+  echo "Targets: $TO"
+fi
 
 if [[ "$PREFLIGHT" -eq 0 ]]; then
   emit_source_quality_notices
@@ -686,7 +753,10 @@ elif [[ "$DRY_RUN" -eq 1 ]]; then
   echo "Mode: DRY-RUN"
 else
   echo "Mode: REAL CONVERSION"
-  mkdir -p "$OUT"
+  for _fmt in "${TO_FORMATS[@]}"; do
+    mkdir -p "$(output_root_for_format "$_fmt")"
+  done
+  unset _fmt
 fi
 
 if [[ "$MANIFEST_ENABLED" -eq 1 ]]; then
@@ -705,12 +775,16 @@ fi
 
 echo
 
+FIND_EXCLUDE_ARGS=()
+for _fmt in "${TO_FORMATS[@]}"; do
+  FIND_EXCLUDE_ARGS+=(-not -path "$(output_root_for_format "$_fmt")/*")
+done
+unset _fmt
+
 while IFS= read -r -d '' file; do
   total=$((total + 1))
 
   rel="${file#"$SRC"/}"
-  out_rel="${rel%.*}.${TO}"
-  dest="$OUT/$out_rel"
 
   echo "File: $rel"
 
@@ -718,7 +792,7 @@ while IFS= read -r -d '' file; do
     echo "  INVALID: $INVALID_REASON"
     invalid=$((invalid + 1))
     if [[ "$MANIFEST_ENABLED" -eq 1 ]]; then
-      manifest_write_record "$rel" "$out_rel" "invalid" "$INVALID_REASON" "" "$file" ""
+      manifest_write_record "$rel" "${rel%.*}.${TO_FORMATS[0]}" "invalid" "$INVALID_REASON" "" "$file" ""
     fi
     if [[ "$QUARANTINE_ENABLED" -eq 1 && "$PREFLIGHT" -eq 0 && "$DRY_RUN" -eq 0 ]]; then
       quarantine_record "invalid" "$rel" "$file" "$INVALID_REASON"
@@ -736,54 +810,58 @@ while IFS= read -r -d '' file; do
     continue
   fi
 
-  if [[ -f "$dest" && "$FORCE" -eq 0 ]]; then
-    echo "  SKIP: already exists: $dest"
-    skipped=$((skipped + 1))
-    if [[ "$MANIFEST_ENABLED" -eq 1 ]]; then
-      manifest_write_record "$rel" "$out_rel" "skipped" "already exists" "" "$file" "$dest"
-    fi
-    echo
-    continue
-  fi
+  for current_to in "${TO_FORMATS[@]}"; do
+    out_root="$(output_root_for_format "$current_to")"
+    out_rel="${rel%.*}.${current_to}"
+    dest="$out_root/$out_rel"
 
-  if [[ "$DRY_RUN" -eq 1 ]]; then
-    echo "  DRY: ebook-convert \"$file\" \"$dest\""
-    if [[ "$MANIFEST_ENABLED" -eq 1 ]]; then
-      manifest_write_record "$rel" "$out_rel" "planned" "" "" "$file" ""
+    if [[ -f "$dest" && "$FORCE" -eq 0 ]]; then
+      echo "  SKIP [$current_to]: already exists: $dest"
+      skipped=$((skipped + 1))
+      if [[ "$MANIFEST_ENABLED" -eq 1 ]]; then
+        manifest_write_record "$rel" "$out_rel" "skipped" "already exists" "" "$file" "$dest"
+      fi
+      continue
     fi
-    echo
-    continue
-  fi
 
-  mkdir -p "$(dirname "$dest")"
-
-  tmp="${dest%."${TO}"}.tmp.$$.$TO"
-  log="${dest%."${TO}"}.convert.log"
-
-  echo "  CONVERT -> $dest"
-
-  if ebook-convert "$file" "$tmp" >"$log" 2>&1; then
-    mv -f "$tmp" "$dest"
-    rm -f "$log"
-    converted=$((converted + 1))
-    if [[ "$MANIFEST_ENABLED" -eq 1 ]]; then
-      manifest_write_record "$rel" "$out_rel" "converted" "" "" "$file" "$dest"
+    if [[ "$DRY_RUN" -eq 1 ]]; then
+      echo "  DRY [$current_to]: ebook-convert \"$file\" \"$dest\""
+      if [[ "$MANIFEST_ENABLED" -eq 1 ]]; then
+        manifest_write_record "$rel" "$out_rel" "planned" "" "" "$file" ""
+      fi
+      continue
     fi
-    echo "  OK"
-  else
-    rm -f "$tmp"
-    failed=$((failed + 1))
-    if [[ "$MANIFEST_ENABLED" -eq 1 ]]; then
-      manifest_write_record "$rel" "$out_rel" "failed" "conversion failed" "$log" "$file" ""
+
+    mkdir -p "$(dirname "$dest")"
+
+    tmp="${dest%."${current_to}"}.tmp.$$.$current_to"
+    log="${dest%."${current_to}"}.convert.log"
+
+    echo "  CONVERT [$current_to] -> $dest"
+
+    if ebook-convert "$file" "$tmp" >"$log" 2>&1; then
+      mv -f "$tmp" "$dest"
+      rm -f "$log"
+      converted=$((converted + 1))
+      if [[ "$MANIFEST_ENABLED" -eq 1 ]]; then
+        manifest_write_record "$rel" "$out_rel" "converted" "" "" "$file" "$dest"
+      fi
+      echo "  OK [$current_to]"
+    else
+      rm -f "$tmp"
+      failed=$((failed + 1))
+      if [[ "$MANIFEST_ENABLED" -eq 1 ]]; then
+        manifest_write_record "$rel" "$out_rel" "failed" "conversion failed" "$log" "$file" ""
+      fi
+      if [[ "$QUARANTINE_ENABLED" -eq 1 ]]; then
+        quarantine_record "failed" "$rel" "$file" "conversion failed" "$log"
+      fi
+      echo "  FAILED [$current_to]: see log: $log"
     fi
-    if [[ "$QUARANTINE_ENABLED" -eq 1 ]]; then
-      quarantine_record "failed" "$rel" "$file" "conversion failed" "$log"
-    fi
-    echo "  FAILED: see log: $log"
-  fi
+  done
 
   echo
-done < <(find "$SRC" -type f -iname "*.${FROM}" -not -path "$OUT/*" -print0)
+done < <(find "$SRC" -type f -iname "*.${FROM}" "${FIND_EXCLUDE_ARGS[@]}" -print0)
 
 echo "Summary:"
 if [[ "$FROM" == "epub" ]]; then

@@ -377,7 +377,7 @@ PATH="$FAKEBIN:$PATH" "$SCRIPT" \
 
 grep -Eq 'FROM: mobi' "$TMPDIR/mobi-dry.log"
 grep -Eq 'TO: epub' "$TMPDIR/mobi-dry.log"
-grep -Eq 'DRY: ebook-convert .*/Story\.mobi.*/Story\.epub' "$TMPDIR/mobi-dry.log"
+grep -Eq 'DRY \[epub\]: ebook-convert .*/Story\.mobi.*/Story\.epub' "$TMPDIR/mobi-dry.log"
 
 PATH="$FAKEBIN:$PATH" "$SCRIPT" \
   --from mobi \
@@ -463,5 +463,56 @@ if "$SCRIPT" --target kindle --to mobi --src "$SRC" 2>/dev/null; then
   echo "FAIL: --target with --to should fail"
   exit 1
 fi
+
+if "$SCRIPT" --target kindle --to azw3,epub --src "$SRC" 2>/dev/null; then
+  echo "FAIL: --target with multiple --to formats should fail"
+  exit 1
+fi
+
+MULTI_BASE="$TMPDIR/multi-base"
+mkdir -p "$MULTI_BASE"
+
+PATH="$FAKEBIN:$PATH" "$SCRIPT" \
+  --src "$SRC" \
+  --to azw3,epub \
+  --out "$MULTI_BASE" \
+  --dry-run > "$TMPDIR/multi-dry.log"
+
+grep -Eq 'Targets: azw3,epub' "$TMPDIR/multi-dry.log"
+grep -Eq 'DRY \[azw3\]: ebook-convert .*/Book One\.epub.*/Book One\.azw3' "$TMPDIR/multi-dry.log"
+grep -Eq 'DRY \[epub\]: ebook-convert .*/Book One\.epub.*/Book One\.epub' "$TMPDIR/multi-dry.log"
+
+PATH="$FAKEBIN:$PATH" "$SCRIPT" \
+  --src "$SRC" \
+  --to azw3,epub \
+  --out "$MULTI_BASE" > "$TMPDIR/multi-run.log"
+
+[[ -f "$MULTI_BASE/azw3/Book One.azw3" ]]
+[[ -f "$MULTI_BASE/epub/Book One.epub" ]]
+[[ -f "$MULTI_BASE/azw3/nested/Book Two.azw3" ]]
+[[ -f "$MULTI_BASE/epub/nested/Book Two.epub" ]]
+grep -Eq 'Converted:[[:space:]]+4' "$TMPDIR/multi-run.log"
+
+printf 'existing azw3 output\n' > "$MULTI_BASE/azw3/Book One.azw3"
+
+PATH="$FAKEBIN:$PATH" "$SCRIPT" \
+  --src "$SRC" \
+  --to azw3,epub \
+  --out "$MULTI_BASE" > "$TMPDIR/multi-skip.log"
+
+grep -Eq 'SKIP \[azw3\]: already exists' "$TMPDIR/multi-skip.log"
+grep -Eq 'Converted:[[:space:]]+0' "$TMPDIR/multi-skip.log"
+grep -Eq 'Skipped:[[:space:]]+4' "$TMPDIR/multi-skip.log"
+
+MULTI_DEFAULT="$TMPDIR/multi-default"
+mkdir -p "$MULTI_DEFAULT"
+
+(
+  cd "$MULTI_DEFAULT"
+  PATH="$FAKEBIN:$PATH" "$SCRIPT" --src "$SRC" --to azw3,epub
+) > "$TMPDIR/multi-default.log"
+
+[[ -f "$MULTI_DEFAULT/azw3/Book One.azw3" ]]
+[[ -f "$MULTI_DEFAULT/epub/Book One.epub" ]]
 
 echo "OK: bulk-epub-to-azw3 selftest passed"

@@ -231,6 +231,15 @@ bin/bulk-ebook-convert --target text --src ./epub
 
 Target mapping: `kindle` → `azw3`, `kobo` → `kepub`, `archive` → `epub`, `text` → `txt`. `--target` cannot be combined with `--to`.
 
+Export one library to multiple formats in a single run:
+
+```bash
+bin/bulk-ebook-convert --from epub --to azw3,epub,txt --src ./epub
+bin/bulk-ebook-convert --from epub --to azw3,epub --src ./epub --out ./export
+```
+
+With multiple `--to` formats, each target gets its own output tree (`./azw3`, `./epub`, ... or `OUT/azw3`, `OUT/epub`, ...).
+
 Unsupported formats are rejected before scanning. `pdf` and `djvu` sources emit quality warnings before conversion.
 
 The tool validates EPUB files before conversion, preserves subdirectories, skips existing output files by default, and supports `--force` to overwrite existing output files.
