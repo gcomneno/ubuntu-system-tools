@@ -43,6 +43,12 @@ Options:
   --quarantine-copy  Copy quarantined source files instead of creating symlinks
   --preflight        Inspect EPUB metadata without converting (requires --from epub)
   -h, --help         Show this help
+
+Supported input formats:
+  epub mobi azw azw3 pdf djvu docx doc txt html htm cbz cbr
+
+Supported output formats:
+  azw3 epub mobi pdf txt docx
 EOF
 }
 
@@ -76,6 +82,49 @@ normalize_format() {
   [[ "$value" =~ ^[a-z0-9][a-z0-9_-]*$ ]] || die "invalid format: $1"
 
   printf '%s' "$value"
+}
+
+SUPPORTED_FROM_FORMATS=(
+  epub mobi azw azw3 pdf djvu docx doc txt html htm cbz cbr
+)
+
+SUPPORTED_TO_FORMATS=(
+  azw3 epub mobi pdf txt docx
+)
+
+format_supported() {
+  local format="$1"
+  shift
+  local allowed
+
+  for allowed in "$@"; do
+    if [[ "$format" == "$allowed" ]]; then
+      return 0
+    fi
+  done
+
+  return 1
+}
+
+validate_format_allowlist() {
+  if ! format_supported "$FROM" "${SUPPORTED_FROM_FORMATS[@]}"; then
+    die "unsupported source format: $FROM"
+  fi
+
+  if ! format_supported "$TO" "${SUPPORTED_TO_FORMATS[@]}"; then
+    die "unsupported target format: $TO"
+  fi
+}
+
+emit_source_quality_notices() {
+  case "$FROM" in
+    pdf)
+      echo "WARNING: PDF is often a poor source for ebook conversion"
+      ;;
+    djvu)
+      echo "NOTE: DJVU conversion quality depends on an embedded text layer"
+      ;;
+  esac
 }
 
 is_valid_source() {
@@ -502,6 +551,8 @@ FROM="$(normalize_format "$FROM")"
 TO="$(normalize_format "$TO")"
 INVALID_REASON="$(invalid_source_message)"
 
+validate_format_allowlist
+
 if [[ "$OUT_EXPLICIT" -eq 0 ]]; then
   OUT="$PWD/$TO"
 fi
@@ -563,6 +614,10 @@ echo "SRC: $SRC"
 echo "OUT: $OUT"
 echo "FROM: $FROM"
 echo "TO: $TO"
+
+if [[ "$PREFLIGHT" -eq 0 ]]; then
+  emit_source_quality_notices
+fi
 
 if [[ "$PREFLIGHT" -eq 1 ]]; then
   echo "Mode: PREFLIGHT"
