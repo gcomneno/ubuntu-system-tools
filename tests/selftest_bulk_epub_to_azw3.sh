@@ -28,6 +28,11 @@ cat > "$FAKEBIN/ebook-convert" <<'EOF'
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
+if [[ "${1:-}" == "--version" ]]; then
+  echo "ebook-convert fake 1.2.3"
+  exit 0
+fi
+
 input="$1"
 output="$2"
 
@@ -178,5 +183,96 @@ PATH="$FAKEBIN:$PATH" "$SCRIPT" --src "$SRC" --out "$OUT" > "$TMPDIR/rerun.log"
 
 grep -Eq 'Converted:[[:space:]]+0' "$TMPDIR/rerun.log"
 grep -Eq 'Skipped:[[:space:]]+2' "$TMPDIR/rerun.log"
+
+if "$SCRIPT" --src "$SRC" --preflight --manifest 2>/dev/null; then
+  echo "FAIL: preflight + manifest should fail"
+  exit 1
+fi
+
+MANIFEST_DRY="$TMPDIR/manifest-dry.jsonl"
+OUT_DRY="$TMPDIR/out-dry-manifest"
+mkdir -p "$OUT_DRY"
+PATH="$FAKEBIN:$PATH" "$SCRIPT" --src "$SRC" --out "$OUT_DRY" --dry-run --manifest "$MANIFEST_DRY" > "$TMPDIR/manifest-dry.log"
+
+[[ -f "$MANIFEST_DRY" ]]
+
+python3 - "$MANIFEST_DRY" <<'PY'
+import json
+import sys
+from collections import Counter
+
+records = [json.loads(line) for line in open(sys.argv[1], encoding="utf-8")]
+if len(records) != 3:
+    raise SystemExit(f"expected 3 manifest records, got {len(records)}")
+
+statuses = Counter(record["status"] for record in records)
+if statuses != Counter({"invalid": 1, "planned": 2}):
+    raise SystemExit(f"unexpected dry-run manifest statuses: {statuses}")
+
+for record in records:
+    for key in ("source", "output", "timestamp", "source_size", "source_sha256"):
+        if key not in record:
+            raise SystemExit(f"missing manifest field {key}: {record}")
+PY
+
+OUT_MAN="$TMPDIR/out-manifest"
+mkdir -p "$OUT_MAN"
+MANIFEST_REAL="$TMPDIR/manifest-real.jsonl"
+
+PATH="$FAKEBIN:$PATH" "$SCRIPT" --src "$SRC" --out "$OUT_MAN" --manifest "$MANIFEST_REAL" > "$TMPDIR/manifest-real.log"
+
+[[ -f "$OUT_MAN/Book One.azw3" ]]
+[[ -f "$OUT_MAN/nested/Book Two.azw3" ]]
+
+python3 - "$MANIFEST_REAL" <<'PY'
+import json
+import sys
+from collections import Counter
+
+records = [json.loads(line) for line in open(sys.argv[1], encoding="utf-8")]
+if len(records) != 3:
+    raise SystemExit(f"expected 3 manifest records, got {len(records)}")
+
+statuses = Counter(record["status"] for record in records)
+if statuses != Counter({"converted": 2, "invalid": 1}):
+    raise SystemExit(f"unexpected conversion manifest statuses: {statuses}")
+
+for record in records:
+    if record["status"] == "converted":
+        for key in ("output_size", "output_sha256", "ebook_convert_version"):
+            if key not in record:
+                raise SystemExit(f"missing converted manifest field {key}: {record}")
+PY
+
+OUT_DEFAULT="$TMPDIR/out-default-manifest"
+mkdir -p "$OUT_DEFAULT"
+
+PATH="$FAKEBIN:$PATH" "$SCRIPT" --src "$SRC" --out "$OUT_DEFAULT" --manifest > "$TMPDIR/manifest-default.log"
+
+[[ -f "$OUT_DEFAULT/conversion-manifest.jsonl" ]]
+
+MANIFEST_SKIP="$TMPDIR/manifest-skip.jsonl"
+PATH="$FAKEBIN:$PATH" "$SCRIPT" --src "$SRC" --out "$OUT_MAN" --manifest "$MANIFEST_SKIP" > "$TMPDIR/manifest-skip.log"
+
+python3 - "$MANIFEST_SKIP" <<'PY'
+import json
+import sys
+from collections import Counter
+
+records = [json.loads(line) for line in open(sys.argv[1], encoding="utf-8")]
+if len(records) != 3:
+    raise SystemExit(f"expected 3 manifest records, got {len(records)}")
+
+statuses = Counter(record["status"] for record in records)
+if statuses != Counter({"skipped": 2, "invalid": 1}):
+    raise SystemExit(f"unexpected skip manifest statuses: {statuses}")
+
+for record in records:
+    if record["status"] == "skipped":
+        if record.get("reason") != "already exists":
+            raise SystemExit(f"unexpected skip reason: {record}")
+        if "output_sha256" not in record:
+            raise SystemExit(f"missing output_sha256 on skipped record: {record}")
+PY
 
 echo "OK: bulk-epub-to-azw3 selftest passed"
