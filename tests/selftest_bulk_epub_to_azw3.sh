@@ -659,4 +659,73 @@ PATH="$FAKEBIN:$PATH" "$SCRIPT" \
 grep -F -- '--prefer-metadata-cover' "$TMPDIR/cleanup-cover-combined.log"
 grep -F -- '--enable-heuristics' "$TMPDIR/cleanup-cover-combined.log"
 
+PATH="$FAKEBIN:$PATH" "$SCRIPT" \
+  --src "$SRC" \
+  --out "$OUT_DRY" \
+  --profile generic \
+  --dry-run > "$TMPDIR/profile-generic.log"
+
+if grep -Eq 'Profile:' "$TMPDIR/profile-generic.log"; then
+  echo "FAIL: generic profile should not emit profile banner"
+  exit 1
+fi
+
+PATH="$FAKEBIN:$PATH" "$SCRIPT" \
+  --src "$SRC" \
+  --out "$OUT_DRY" \
+  --profile kindle \
+  --dry-run > "$TMPDIR/profile-kindle.log"
+
+grep -Eq 'Profile: kindle \(--output-profile kindle\)' "$TMPDIR/profile-kindle.log"
+grep -F -- '--output-profile kindle' "$TMPDIR/profile-kindle.log"
+grep -Fq 'DRY [azw3]:' "$TMPDIR/profile-kindle.log"
+
+PATH="$FAKEBIN:$PATH" "$SCRIPT" \
+  --src "$SRC" \
+  --out "$OUT_DRY" \
+  --profile kindle-paperwhite \
+  --dry-run > "$TMPDIR/profile-kindle-pw.log"
+
+grep -Eq 'Profile: kindle-paperwhite \(--output-profile kindle_pw3\)' "$TMPDIR/profile-kindle-pw.log"
+grep -F -- '--output-profile kindle_pw3' "$TMPDIR/profile-kindle-pw.log"
+
+PATH="$FAKEBIN:$PATH" "$SCRIPT" \
+  --src "$SRC" \
+  --out "$OUT_DRY" \
+  --profile kindle-scribe \
+  --dry-run > "$TMPDIR/profile-kindle-scribe.log"
+
+grep -Eq 'Profile: kindle-scribe \(--output-profile kindle_scribe\)' "$TMPDIR/profile-kindle-scribe.log"
+grep -F -- '--output-profile kindle_scribe' "$TMPDIR/profile-kindle-scribe.log"
+
+PATH="$FAKEBIN:$PATH" "$SCRIPT" \
+  --src "$SRC" \
+  --out "$OUT_DRY" \
+  --profile kindle-legacy \
+  --dry-run > "$TMPDIR/profile-kindle-legacy.log"
+
+grep -Eq 'Profile: kindle-legacy \(--output-profile kindle --mobi-file-type both\)' "$TMPDIR/profile-kindle-legacy.log"
+grep -F -- '--output-profile kindle' "$TMPDIR/profile-kindle-legacy.log"
+grep -F -- '--mobi-file-type both' "$TMPDIR/profile-kindle-legacy.log"
+
+if "$SCRIPT" --src "$SRC" --profile bad-profile --dry-run 2>/dev/null; then
+  echo "FAIL: unknown profile should fail"
+  exit 1
+fi
+
+if "$SCRIPT" --src "$SRC" --preflight --profile kindle 2>/dev/null; then
+  echo "FAIL: preflight + profile should fail"
+  exit 1
+fi
+
+PATH="$FAKEBIN:$PATH" "$SCRIPT" \
+  --src "$SRC" \
+  --out "$OUT_DRY" \
+  --profile kindle \
+  --cleanup conservative \
+  --dry-run > "$TMPDIR/profile-cleanup-combined.log"
+
+grep -F -- '--output-profile kindle' "$TMPDIR/profile-cleanup-combined.log"
+grep -F -- '--enable-heuristics' "$TMPDIR/profile-cleanup-combined.log"
+
 echo "OK: bulk-epub-to-azw3 selftest passed"
