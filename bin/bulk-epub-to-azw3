@@ -7,7 +7,7 @@ PROGRAM_NAME="$(basename "$0")"
 usage() {
   cat <<EOF
 Usage:
-  $PROGRAM_NAME [--src INPUT_DIR] [--out OUTPUT_DIR] [--from FORMAT] [--to FORMAT | --target NAME] [--dry-run] [--force] [--profile NAME] [--cover-policy POLICY] [--cleanup MODE] [--manifest [PATH]] [--quarantine DIR] [--quarantine-copy] [--debug-failed DIR]
+  $PROGRAM_NAME [--src INPUT_DIR] [--out OUTPUT_DIR] [--from FORMAT] [--to FORMAT | --target NAME] [--dry-run] [--force] [--profile NAME] [--cover-policy POLICY] [--cleanup MODE] [--extra-css PATH] [--manifest [PATH]] [--quarantine DIR] [--quarantine-copy] [--debug-failed DIR]
   $PROGRAM_NAME [--src INPUT_DIR] [--preflight]
 
 Description:
@@ -37,6 +37,7 @@ Examples:
   $PROGRAM_NAME --src ./epub --out ./kindle --cover-policy prefer-metadata --dry-run
   $PROGRAM_NAME --src ./epub --out ./kindle --cleanup conservative --dry-run
   $PROGRAM_NAME --src ./epub --out ./kindle --profile kindle-paperwhite --dry-run
+  $PROGRAM_NAME --src ./epub --out ./kindle --extra-css ./kindle.css --dry-run
 
 Options:
   --src              Source directory. Default: current working directory
@@ -49,6 +50,7 @@ Options:
   --profile          Conversion profile: generic, kindle, kindle-paperwhite, kindle-scribe, kindle-legacy
   --cover-policy     Kindle cover policy: keep, prefer-metadata, remove-first-image
   --cleanup          Typography cleanup preset: off, conservative
+  --extra-css        Path to a CSS file passed to Calibre as --extra-css
   --manifest         Write a JSONL conversion manifest. Default path: OUT/conversion-manifest.jsonl
   --quarantine DIR   Record invalid or failed source files under DIR for review
   --quarantine-copy  Copy quarantined source files instead of creating symlinks
@@ -207,6 +209,40 @@ resolve_conversion_profile() {
   esac
 }
 
+resolve_extra_css() {
+  if [[ -n "$EXTRA_CSS" ]]; then
+    die "duplicate --extra-css option"
+  fi
+  EXTRA_CSS="$1"
+}
+
+validate_extra_css() {
+  EXTRA_CSS_CONVERT_ARGS=()
+
+  if [[ -z "$EXTRA_CSS" ]]; then
+    return
+  fi
+
+  [[ -f "$EXTRA_CSS" ]] || die "CSS file does not exist: $EXTRA_CSS"
+  EXTRA_CSS="$(realpath "$EXTRA_CSS")"
+  EXTRA_CSS_CONVERT_ARGS=(--extra-css "$EXTRA_CSS")
+}
+
+format_shell_words() {
+  local arg
+  local -a quoted=()
+
+  for arg in "$@"; do
+    if [[ "$arg" == *[$' \t']* ]]; then
+      quoted+=("\"$arg\"")
+    else
+      quoted+=("$arg")
+    fi
+  done
+
+  printf '%s' "${quoted[*]}"
+}
+
 rebuild_convert_extra_args() {
   CONVERT_EXTRA_ARGS=()
   if [[ ${#PROFILE_CONVERT_ARGS[@]} -gt 0 ]]; then
@@ -217,6 +253,9 @@ rebuild_convert_extra_args() {
   fi
   if [[ ${#CLEANUP_CONVERT_ARGS[@]} -gt 0 ]]; then
     CONVERT_EXTRA_ARGS+=("${CLEANUP_CONVERT_ARGS[@]}")
+  fi
+  if [[ ${#EXTRA_CSS_CONVERT_ARGS[@]} -gt 0 ]]; then
+    CONVERT_EXTRA_ARGS+=("${EXTRA_CSS_CONVERT_ARGS[@]}")
   fi
 }
 
@@ -649,6 +688,8 @@ COVER_POLICY="keep"
 EBOOK_CONVERT_EXTRA_ARGS=()
 CLEANUP="off"
 CLEANUP_CONVERT_ARGS=()
+EXTRA_CSS=""
+EXTRA_CSS_CONVERT_ARGS=()
 CONVERT_EXTRA_ARGS=()
 EBOOK_CONVERT_VERSION=""
 INVALID_REASON=""
@@ -743,6 +784,15 @@ while [[ $# -gt 0 ]]; do
       ;;
     --cleanup=*)
       resolve_cleanup_mode "${1#--cleanup=}"
+      shift
+      ;;
+    --extra-css)
+      [[ $# -ge 2 ]] || die "missing value for --extra-css"
+      resolve_extra_css "$2"
+      shift 2
+      ;;
+    --extra-css=*)
+      resolve_extra_css "${1#--extra-css=}"
       shift
       ;;
     --preflight)
@@ -854,9 +904,8 @@ fi
 [[ "$PREFLIGHT" -eq 0 || "$COVER_POLICY" == "keep" ]] || die "--cover-policy cannot be used with --preflight"
 [[ "$PREFLIGHT" -eq 0 || "$CLEANUP" == "off" ]] || die "--cleanup cannot be used with --preflight"
 [[ "$PREFLIGHT" -eq 0 || "$CONVERSION_PROFILE" == "generic" ]] || die "--profile cannot be used with --preflight"
+[[ "$PREFLIGHT" -eq 0 || -z "$EXTRA_CSS" ]] || die "--extra-css cannot be used with --preflight"
 [[ "$PREFLIGHT" -eq 0 || "$FROM" == "epub" ]] || die "--preflight requires --from epub"
-
-rebuild_convert_extra_args
 [[ "$QUARANTINE_COPY" -eq 0 || "$QUARANTINE_ENABLED" -eq 1 ]] || die "--quarantine-copy requires --quarantine"
 
 [[ -d "$SRC" ]] || die "source directory does not exist: $SRC"
@@ -878,6 +927,9 @@ fi
 if [[ "$DEBUG_FAILED_ENABLED" -eq 1 ]]; then
   DEBUG_FAILED="$(realpath -m "$DEBUG_FAILED")"
 fi
+
+validate_extra_css
+rebuild_convert_extra_args
 
 _fmt_check=""
 for _fmt_check in "${TO_FORMATS[@]}"; do
@@ -923,6 +975,10 @@ fi
 
 if [[ "$PREFLIGHT" -eq 0 && "$CLEANUP" != "off" ]]; then
   echo "Cleanup: $CLEANUP (${CLEANUP_CONVERT_ARGS[*]})"
+fi
+
+if [[ "$PREFLIGHT" -eq 0 && -n "$EXTRA_CSS" ]]; then
+  echo "Extra-css: $EXTRA_CSS"
 fi
 
 if [[ "$PREFLIGHT" -eq 0 ]]; then
@@ -1013,7 +1069,8 @@ while IFS= read -r -d '' file; do
 
     if [[ "$DRY_RUN" -eq 1 ]]; then
       if [[ ${#CONVERT_EXTRA_ARGS[@]} -gt 0 ]]; then
-        echo "  DRY [$current_to]: ebook-convert \"$file\" \"$dest\" ${CONVERT_EXTRA_ARGS[*]}"
+        _extra_display="$(format_shell_words "${CONVERT_EXTRA_ARGS[@]}")"
+        echo "  DRY [$current_to]: ebook-convert \"$file\" \"$dest\" $_extra_display"
       else
         echo "  DRY [$current_to]: ebook-convert \"$file\" \"$dest\""
       fi
