@@ -7,36 +7,41 @@ PROGRAM_NAME="$(basename "$0")"
 usage() {
   cat <<EOF
 Usage:
-  $PROGRAM_NAME [--src INPUT_DIR] [--out OUTPUT_DIR] [--dry-run] [--force] [--manifest [PATH]] [--quarantine DIR] [--quarantine-copy]
+  $PROGRAM_NAME [--src INPUT_DIR] [--out OUTPUT_DIR] [--from FORMAT] [--to FORMAT] [--dry-run] [--force] [--manifest [PATH]] [--quarantine DIR] [--quarantine-copy]
   $PROGRAM_NAME [--src INPUT_DIR] [--preflight]
 
 Description:
-  Bulk-convert EPUB files to AZW3 using Calibre / ebook-convert.
+  Bulk-convert ebook files using Calibre / ebook-convert.
+
+  Defaults are EPUB to AZW3, matching the historical bulk-epub-to-azw3 behavior.
 
 Defaults:
   --src      current working directory
-  --out      ./azw3 inside the current working directory
+  --from     epub
+  --to       azw3
+  --out      ./<to> inside the current working directory (./azw3 by default)
 
 Examples:
   $PROGRAM_NAME --dry-run
   $PROGRAM_NAME
+  $PROGRAM_NAME --from epub --to azw3
+  $PROGRAM_NAME --from mobi --to epub --src ./mobi --out ./epub
   $PROGRAM_NAME --src ./epub --out ./kindle --dry-run
-  $PROGRAM_NAME --src ./epub --out ./kindle
-  $PROGRAM_NAME --src ./epub --out ./kindle --force
   $PROGRAM_NAME --src ./epub --preflight
   $PROGRAM_NAME --src ./epub --out ./kindle --manifest
-  $PROGRAM_NAME --src ./epub --out ./kindle --manifest ./reports/run.jsonl
   $PROGRAM_NAME --src ./epub --out ./kindle --quarantine ./review
 
 Options:
   --src              Source directory. Default: current working directory
-  --out              Output directory. Default: ./azw3
+  --from             Source ebook format extension. Default: epub
+  --to               Target ebook format extension. Default: azw3
+  --out              Output directory. Default: ./<to>
   --dry-run          Show what would be converted without creating output
-  --force            Overwrite existing .azw3 files
+  --force            Overwrite existing output files
   --manifest         Write a JSONL conversion manifest. Default path: OUT/conversion-manifest.jsonl
-  --quarantine DIR   Record invalid or failed EPUB files under DIR for review
-  --quarantine-copy  Copy quarantined EPUB files instead of creating symlinks
-  --preflight        Inspect EPUB metadata without converting
+  --quarantine DIR   Record invalid or failed source files under DIR for review
+  --quarantine-copy  Copy quarantined source files instead of creating symlinks
+  --preflight        Inspect EPUB metadata without converting (requires --from epub)
   -h, --help         Show this help
 EOF
 }
@@ -62,6 +67,36 @@ is_valid_epub() {
   unzip -Z -1 "$file" 2>/dev/null | grep -qx 'META-INF/container.xml' || return 1
 
   return 0
+}
+
+normalize_format() {
+  local value="${1#/}"
+  value="${value,,}"
+
+  [[ "$value" =~ ^[a-z0-9][a-z0-9_-]*$ ]] || die "invalid format: $1"
+
+  printf '%s' "$value"
+}
+
+is_valid_source() {
+  local file="$1"
+
+  case "$FROM" in
+    epub)
+      is_valid_epub "$file"
+      ;;
+    *)
+      [[ -f "$file" && -r "$file" ]]
+      ;;
+  esac
+}
+
+invalid_source_message() {
+  if [[ "$FROM" == "epub" ]]; then
+    printf '%s' "not a valid EPUB"
+  else
+    printf 'not a valid %s file' "$FROM"
+  fi
 }
 
 epub_preflight_report() {
@@ -357,7 +392,10 @@ quarantine_record() {
 }
 
 SRC="$PWD"
-OUT="$PWD/azw3"
+OUT=""
+OUT_EXPLICIT=0
+FROM=epub
+TO=azw3
 DRY_RUN=0
 FORCE=0
 PREFLIGHT=0
@@ -367,6 +405,7 @@ QUARANTINE_ENABLED=0
 QUARANTINE=""
 QUARANTINE_COPY=0
 EBOOK_CONVERT_VERSION=""
+INVALID_REASON=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -382,10 +421,30 @@ while [[ $# -gt 0 ]]; do
     --out)
       [[ $# -ge 2 ]] || die "missing value for --out"
       OUT="$2"
+      OUT_EXPLICIT=1
       shift 2
       ;;
     --out=*)
       OUT="${1#--out=}"
+      OUT_EXPLICIT=1
+      shift
+      ;;
+    --from)
+      [[ $# -ge 2 ]] || die "missing value for --from"
+      FROM="$2"
+      shift 2
+      ;;
+    --from=*)
+      FROM="${1#--from=}"
+      shift
+      ;;
+    --to)
+      [[ $# -ge 2 ]] || die "missing value for --to"
+      TO="$2"
+      shift 2
+      ;;
+    --to=*)
+      TO="${1#--to=}"
       shift
       ;;
     --dry-run)
@@ -439,10 +498,21 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+FROM="$(normalize_format "$FROM")"
+TO="$(normalize_format "$TO")"
+INVALID_REASON="$(invalid_source_message)"
+
+if [[ "$OUT_EXPLICIT" -eq 0 ]]; then
+  OUT="$PWD/$TO"
+fi
+
 need_cmd find
 need_cmd realpath
-need_cmd unzip
-need_cmd grep
+
+if [[ "$FROM" == "epub" || "$PREFLIGHT" -eq 1 ]]; then
+  need_cmd unzip
+  need_cmd grep
+fi
 
 if [[ "$PREFLIGHT" -eq 1 ]]; then
   need_cmd python3
@@ -460,6 +530,7 @@ fi
 
 [[ "$PREFLIGHT" -eq 0 || "$MANIFEST_ENABLED" -eq 0 ]] || die "--manifest cannot be used with --preflight"
 [[ "$PREFLIGHT" -eq 0 || "$QUARANTINE_ENABLED" -eq 0 ]] || die "--quarantine cannot be used with --preflight"
+[[ "$PREFLIGHT" -eq 0 || "$FROM" == "epub" ]] || die "--preflight requires --from epub"
 [[ "$QUARANTINE_COPY" -eq 0 || "$QUARANTINE_ENABLED" -eq 1 ]] || die "--quarantine-copy requires --quarantine"
 
 [[ -d "$SRC" ]] || die "source directory does not exist: $SRC"
@@ -490,6 +561,8 @@ failed=0
 
 echo "SRC: $SRC"
 echo "OUT: $OUT"
+echo "FROM: $FROM"
+echo "TO: $TO"
 
 if [[ "$PREFLIGHT" -eq 1 ]]; then
   echo "Mode: PREFLIGHT"
@@ -520,19 +593,19 @@ while IFS= read -r -d '' file; do
   total=$((total + 1))
 
   rel="${file#"$SRC"/}"
-  out_rel="${rel%.*}.azw3"
+  out_rel="${rel%.*}.${TO}"
   dest="$OUT/$out_rel"
 
   echo "File: $rel"
 
-  if ! is_valid_epub "$file"; then
-    echo "  INVALID: not a valid EPUB"
+  if ! is_valid_source "$file"; then
+    echo "  INVALID: $INVALID_REASON"
     invalid=$((invalid + 1))
     if [[ "$MANIFEST_ENABLED" -eq 1 ]]; then
-      manifest_write_record "$rel" "$out_rel" "invalid" "not a valid EPUB" "" "$file" ""
+      manifest_write_record "$rel" "$out_rel" "invalid" "$INVALID_REASON" "" "$file" ""
     fi
     if [[ "$QUARANTINE_ENABLED" -eq 1 && "$PREFLIGHT" -eq 0 && "$DRY_RUN" -eq 0 ]]; then
-      quarantine_record "invalid" "$rel" "$file" "not a valid EPUB"
+      quarantine_record "invalid" "$rel" "$file" "$INVALID_REASON"
     fi
     echo
     continue
@@ -568,8 +641,8 @@ while IFS= read -r -d '' file; do
 
   mkdir -p "$(dirname "$dest")"
 
-  tmp="${dest%.azw3}.tmp.$$.azw3"
-  log="${dest%.azw3}.convert.log"
+  tmp="${dest%."${TO}"}.tmp.$$.$TO"
+  log="${dest%."${TO}"}.convert.log"
 
   echo "  CONVERT -> $dest"
 
@@ -594,12 +667,18 @@ while IFS= read -r -d '' file; do
   fi
 
   echo
-done < <(find "$SRC" -type f -iname '*.epub' -not -path "$OUT/*" -print0)
+done < <(find "$SRC" -type f -iname "*.${FROM}" -not -path "$OUT/*" -print0)
 
 echo "Summary:"
-echo "  EPUB found:      $total"
-echo "  EPUB valid:      $valid"
-echo "  EPUB invalid:    $invalid"
+if [[ "$FROM" == "epub" ]]; then
+  echo "  EPUB found:      $total"
+  echo "  EPUB valid:      $valid"
+  echo "  EPUB invalid:    $invalid"
+else
+  echo "  Source found:    $total"
+  echo "  Source valid:    $valid"
+  echo "  Source invalid:  $invalid"
+fi
 
 if [[ "$PREFLIGHT" -eq 1 ]]; then
   echo "  Preflighted:     $preflighted"
