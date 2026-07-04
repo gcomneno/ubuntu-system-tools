@@ -7,7 +7,7 @@ PROGRAM_NAME="$(basename "$0")"
 usage() {
   cat <<EOF
 Usage:
-  $PROGRAM_NAME [--src INPUT_DIR] [--out OUTPUT_DIR] [--from FORMAT] [--to FORMAT | --target NAME] [--dry-run] [--force] [--manifest [PATH]] [--quarantine DIR] [--quarantine-copy]
+  $PROGRAM_NAME [--src INPUT_DIR] [--out OUTPUT_DIR] [--from FORMAT] [--to FORMAT | --target NAME] [--dry-run] [--force] [--manifest [PATH]] [--quarantine DIR] [--quarantine-copy] [--debug-failed DIR]
   $PROGRAM_NAME [--src INPUT_DIR] [--preflight]
 
 Description:
@@ -33,6 +33,7 @@ Examples:
   $PROGRAM_NAME --src ./epub --preflight
   $PROGRAM_NAME --src ./epub --out ./kindle --manifest
   $PROGRAM_NAME --src ./epub --out ./kindle --quarantine ./review
+  $PROGRAM_NAME --src ./epub --out ./kindle --debug-failed ./debug
 
 Options:
   --src              Source directory. Default: current working directory
@@ -45,6 +46,7 @@ Options:
   --manifest         Write a JSONL conversion manifest. Default path: OUT/conversion-manifest.jsonl
   --quarantine DIR   Record invalid or failed source files under DIR for review
   --quarantine-copy  Copy quarantined source files instead of creating symlinks
+  --debug-failed DIR Export Calibre debug-pipeline output for failed conversions
   --preflight        Inspect EPUB metadata without converting (requires --from epub)
   -h, --help         Show this help
 
@@ -480,6 +482,27 @@ print(json.dumps(record, ensure_ascii=False))
 PY
 }
 
+debug_failed_dir_for() {
+  local rel="$1"
+  local current_to="$2"
+
+  if [[ "$MULTI_TARGET" -eq 1 ]]; then
+    printf '%s/%s/%s' "$DEBUG_FAILED" "$rel" "$current_to"
+  else
+    printf '%s/%s' "$DEBUG_FAILED" "$rel"
+  fi
+}
+
+export_debug_pipeline_on_failure() {
+  local file="$1"
+  local tmp="$2"
+  local log="$3"
+  local debug_dir="$4"
+
+  mkdir -p "$debug_dir"
+  ebook-convert "$file" "$tmp" --debug-pipeline "$debug_dir" >>"$log" 2>&1 || true
+}
+
 quarantine_attach_source() {
   local entry_dir="$1"
   local source_file="$2"
@@ -528,6 +551,8 @@ MANIFEST=""
 QUARANTINE_ENABLED=0
 QUARANTINE=""
 QUARANTINE_COPY=0
+DEBUG_FAILED_ENABLED=0
+DEBUG_FAILED=""
 EBOOK_CONVERT_VERSION=""
 INVALID_REASON=""
 
@@ -629,6 +654,17 @@ while [[ $# -gt 0 ]]; do
       QUARANTINE_COPY=1
       shift
       ;;
+    --debug-failed)
+      [[ $# -ge 2 ]] || die "missing value for --debug-failed"
+      DEBUG_FAILED="$2"
+      DEBUG_FAILED_ENABLED=1
+      shift 2
+      ;;
+    --debug-failed=*)
+      DEBUG_FAILED="${1#--debug-failed=}"
+      DEBUG_FAILED_ENABLED=1
+      shift
+      ;;
     -h|--help)
       usage
       exit 0
@@ -690,6 +726,7 @@ fi
 
 [[ "$PREFLIGHT" -eq 0 || "$MANIFEST_ENABLED" -eq 0 ]] || die "--manifest cannot be used with --preflight"
 [[ "$PREFLIGHT" -eq 0 || "$QUARANTINE_ENABLED" -eq 0 ]] || die "--quarantine cannot be used with --preflight"
+[[ "$PREFLIGHT" -eq 0 || "$DEBUG_FAILED_ENABLED" -eq 0 ]] || die "--debug-failed cannot be used with --preflight"
 [[ "$PREFLIGHT" -eq 0 || "$FROM" == "epub" ]] || die "--preflight requires --from epub"
 [[ "$QUARANTINE_COPY" -eq 0 || "$QUARANTINE_ENABLED" -eq 1 ]] || die "--quarantine-copy requires --quarantine"
 
@@ -707,6 +744,10 @@ fi
 
 if [[ "$QUARANTINE_ENABLED" -eq 1 ]]; then
   QUARANTINE="$(realpath -m "$QUARANTINE")"
+fi
+
+if [[ "$DEBUG_FAILED_ENABLED" -eq 1 ]]; then
+  DEBUG_FAILED="$(realpath -m "$DEBUG_FAILED")"
 fi
 
 _fmt_check=""
@@ -773,6 +814,11 @@ if [[ "$QUARANTINE_ENABLED" -eq 1 && "$PREFLIGHT" -eq 0 && "$DRY_RUN" -eq 0 ]]; 
   echo "Quarantine: $QUARANTINE"
 fi
 
+if [[ "$DEBUG_FAILED_ENABLED" -eq 1 && "$PREFLIGHT" -eq 0 ]]; then
+  mkdir -p "$DEBUG_FAILED"
+  echo "Debug-failed: $DEBUG_FAILED"
+fi
+
 echo
 
 FIND_EXCLUDE_ARGS=()
@@ -826,6 +872,9 @@ while IFS= read -r -d '' file; do
 
     if [[ "$DRY_RUN" -eq 1 ]]; then
       echo "  DRY [$current_to]: ebook-convert \"$file\" \"$dest\""
+      if [[ "$DEBUG_FAILED_ENABLED" -eq 1 ]]; then
+        echo "  DEBUG-FAIL [$current_to]: would write to $(debug_failed_dir_for "$rel" "$current_to") on failure"
+      fi
       if [[ "$MANIFEST_ENABLED" -eq 1 ]]; then
         manifest_write_record "$rel" "$out_rel" "planned" "" "" "$file" ""
       fi
@@ -850,6 +899,11 @@ while IFS= read -r -d '' file; do
     else
       rm -f "$tmp"
       failed=$((failed + 1))
+      if [[ "$DEBUG_FAILED_ENABLED" -eq 1 ]]; then
+        debug_dir="$(debug_failed_dir_for "$rel" "$current_to")"
+        export_debug_pipeline_on_failure "$file" "$tmp" "$log" "$debug_dir"
+        echo "  DEBUG-FAIL [$current_to]: exported to $debug_dir"
+      fi
       if [[ "$MANIFEST_ENABLED" -eq 1 ]]; then
         manifest_write_record "$rel" "$out_rel" "failed" "conversion failed" "$log" "$file" ""
       fi

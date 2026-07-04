@@ -270,6 +270,14 @@ bin/bulk-epub-to-azw3 --src ./epub --out ./kindle --quarantine ./review --quaran
 
 Each quarantined item is recorded under `review/invalid/...` or `review/failed/...` with a reason file, source path, optional symlink to the original EPUB, and conversion logs for failures.
 
+Export Calibre debug-pipeline artifacts for failed conversions:
+
+```bash
+bin/bulk-epub-to-azw3 --src ./epub --out ./kindle --debug-failed ./debug
+```
+
+On failure, the tool reruns `ebook-convert` with `--debug-pipeline` and writes per-book debug output under `./debug/...`.
+
 Dependencies:
 
 ```bash
