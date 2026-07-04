@@ -400,4 +400,40 @@ if "$SCRIPT" --from mobi --preflight --src "$MOBI_SRC" 2>/dev/null; then
   exit 1
 fi
 
+if "$SCRIPT" --from foo --to epub --src "$SRC" 2>/dev/null; then
+  echo "FAIL: unsupported --from should fail"
+  exit 1
+fi
+
+if "$SCRIPT" --from epub --to foo --src "$SRC" 2>/dev/null; then
+  echo "FAIL: unsupported --to should fail"
+  exit 1
+fi
+
+PDF_SRC="$TMPDIR/pdf-src"
+mkdir -p "$PDF_SRC"
+printf 'fake pdf\n' > "$PDF_SRC/sample.pdf"
+
+PATH="$FAKEBIN:$PATH" "$SCRIPT" \
+  --from pdf \
+  --to epub \
+  --src "$PDF_SRC" \
+  --out "$TMPDIR/pdf-out" \
+  --dry-run > "$TMPDIR/pdf-dry.log"
+
+grep -Eq 'WARNING: PDF is often a poor source for ebook conversion' "$TMPDIR/pdf-dry.log"
+
+DJVU_SRC="$TMPDIR/djvu-src"
+mkdir -p "$DJVU_SRC"
+printf 'fake djvu\n' > "$DJVU_SRC/sample.djvu"
+
+PATH="$FAKEBIN:$PATH" "$SCRIPT" \
+  --from djvu \
+  --to epub \
+  --src "$DJVU_SRC" \
+  --out "$TMPDIR/djvu-out" \
+  --dry-run > "$TMPDIR/djvu-dry.log"
+
+grep -Eq 'NOTE: DJVU conversion quality depends on an embedded text layer' "$TMPDIR/djvu-dry.log"
+
 echo "OK: bulk-epub-to-azw3 selftest passed"
