@@ -216,6 +216,12 @@ bin/bulk-ebook-convert --from docx --to epub --src ./manuscripts --out ./epub
 
 When `--out` is omitted, the output directory defaults to `./<to>` (for example `./epub` or `./azw3`).
 
+Supported input formats: `epub`, `mobi`, `azw`, `azw3`, `pdf`, `djvu`, `docx`, `doc`, `txt`, `html`, `htm`, `cbz`, `cbr`.
+
+Supported output formats: `azw3`, `epub`, `mobi`, `pdf`, `txt`, `docx`.
+
+Unsupported formats are rejected before scanning. `pdf` and `djvu` sources emit quality warnings before conversion.
+
 The tool validates EPUB files before conversion, preserves subdirectories, skips existing output files by default, and supports `--force` to overwrite existing output files.
 
 Preflight EPUB metadata without converting:
