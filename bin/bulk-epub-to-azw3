@@ -7,7 +7,7 @@ PROGRAM_NAME="$(basename "$0")"
 usage() {
   cat <<EOF
 Usage:
-  $PROGRAM_NAME [--src INPUT_DIR] [--out OUTPUT_DIR] [--from FORMAT] [--to FORMAT | --target NAME] [--dry-run] [--force] [--cover-policy POLICY] [--cleanup MODE] [--manifest [PATH]] [--quarantine DIR] [--quarantine-copy] [--debug-failed DIR]
+  $PROGRAM_NAME [--src INPUT_DIR] [--out OUTPUT_DIR] [--from FORMAT] [--to FORMAT | --target NAME] [--dry-run] [--force] [--profile NAME] [--cover-policy POLICY] [--cleanup MODE] [--manifest [PATH]] [--quarantine DIR] [--quarantine-copy] [--debug-failed DIR]
   $PROGRAM_NAME [--src INPUT_DIR] [--preflight]
 
 Description:
@@ -36,6 +36,7 @@ Examples:
   $PROGRAM_NAME --src ./epub --out ./kindle --debug-failed ./debug
   $PROGRAM_NAME --src ./epub --out ./kindle --cover-policy prefer-metadata --dry-run
   $PROGRAM_NAME --src ./epub --out ./kindle --cleanup conservative --dry-run
+  $PROGRAM_NAME --src ./epub --out ./kindle --profile kindle-paperwhite --dry-run
 
 Options:
   --src              Source directory. Default: current working directory
@@ -45,6 +46,7 @@ Options:
   --out              Output directory. Default: ./<to>
   --dry-run          Show what would be converted without creating output
   --force            Overwrite existing output files
+  --profile          Conversion profile: generic, kindle, kindle-paperwhite, kindle-scribe, kindle-legacy
   --cover-policy     Kindle cover policy: keep, prefer-metadata, remove-first-image
   --cleanup          Typography cleanup preset: off, conservative
   --manifest         Write a JSONL conversion manifest. Default path: OUT/conversion-manifest.jsonl
@@ -65,6 +67,13 @@ Curated targets:
   kobo -> kepub
   archive -> epub
   text -> txt
+
+Conversion profiles:
+  generic            No profile-specific Calibre options (default)
+  kindle             --output-profile kindle
+  kindle-paperwhite  --output-profile kindle_pw3
+  kindle-scribe      --output-profile kindle_scribe
+  kindle-legacy      --output-profile kindle --mobi-file-type both
 EOF
 }
 
@@ -169,8 +178,40 @@ resolve_cleanup_mode() {
   esac
 }
 
+resolve_conversion_profile() {
+  if [[ -n "$CONVERSION_PROFILE" && "$CONVERSION_PROFILE" != "generic" ]]; then
+    die "duplicate --profile option"
+  fi
+
+  CONVERSION_PROFILE="${1,,}"
+  PROFILE_CONVERT_ARGS=()
+
+  case "$CONVERSION_PROFILE" in
+    generic)
+      ;;
+    kindle)
+      PROFILE_CONVERT_ARGS=(--output-profile kindle)
+      ;;
+    kindle-paperwhite)
+      PROFILE_CONVERT_ARGS=(--output-profile kindle_pw3)
+      ;;
+    kindle-scribe)
+      PROFILE_CONVERT_ARGS=(--output-profile kindle_scribe)
+      ;;
+    kindle-legacy)
+      PROFILE_CONVERT_ARGS=(--output-profile kindle --mobi-file-type both)
+      ;;
+    *)
+      die "unknown profile: $1"
+      ;;
+  esac
+}
+
 rebuild_convert_extra_args() {
   CONVERT_EXTRA_ARGS=()
+  if [[ ${#PROFILE_CONVERT_ARGS[@]} -gt 0 ]]; then
+    CONVERT_EXTRA_ARGS+=("${PROFILE_CONVERT_ARGS[@]}")
+  fi
   if [[ ${#EBOOK_CONVERT_EXTRA_ARGS[@]} -gt 0 ]]; then
     CONVERT_EXTRA_ARGS+=("${EBOOK_CONVERT_EXTRA_ARGS[@]}")
   fi
@@ -602,6 +643,8 @@ QUARANTINE=""
 QUARANTINE_COPY=0
 DEBUG_FAILED_ENABLED=0
 DEBUG_FAILED=""
+CONVERSION_PROFILE="generic"
+PROFILE_CONVERT_ARGS=()
 COVER_POLICY="keep"
 EBOOK_CONVERT_EXTRA_ARGS=()
 CLEANUP="off"
@@ -673,6 +716,15 @@ while [[ $# -gt 0 ]]; do
       ;;
     --force)
       FORCE=1
+      shift
+      ;;
+    --profile)
+      [[ $# -ge 2 ]] || die "missing value for --profile"
+      resolve_conversion_profile "$2"
+      shift 2
+      ;;
+    --profile=*)
+      resolve_conversion_profile "${1#--profile=}"
       shift
       ;;
     --cover-policy)
@@ -801,6 +853,7 @@ fi
 [[ "$PREFLIGHT" -eq 0 || "$DEBUG_FAILED_ENABLED" -eq 0 ]] || die "--debug-failed cannot be used with --preflight"
 [[ "$PREFLIGHT" -eq 0 || "$COVER_POLICY" == "keep" ]] || die "--cover-policy cannot be used with --preflight"
 [[ "$PREFLIGHT" -eq 0 || "$CLEANUP" == "off" ]] || die "--cleanup cannot be used with --preflight"
+[[ "$PREFLIGHT" -eq 0 || "$CONVERSION_PROFILE" == "generic" ]] || die "--profile cannot be used with --preflight"
 [[ "$PREFLIGHT" -eq 0 || "$FROM" == "epub" ]] || die "--preflight requires --from epub"
 
 rebuild_convert_extra_args
@@ -858,6 +911,10 @@ fi
 echo "TO: $TO"
 if [[ "$MULTI_TARGET" -eq 1 ]]; then
   echo "Targets: $TO"
+fi
+
+if [[ "$PREFLIGHT" -eq 0 && "$CONVERSION_PROFILE" != "generic" ]]; then
+  echo "Profile: $CONVERSION_PROFILE (${PROFILE_CONVERT_ARGS[*]})"
 fi
 
 if [[ "$PREFLIGHT" -eq 0 && "$COVER_POLICY" != "keep" ]]; then
