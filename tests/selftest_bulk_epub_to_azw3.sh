@@ -670,6 +670,43 @@ if grep -Eq 'Profile:' "$TMPDIR/profile-generic.log"; then
   exit 1
 fi
 
+CSS_FILE="$TMPDIR/kindle.css"
+printf 'p { margin: 0; }\n' > "$CSS_FILE"
+
+PATH="$FAKEBIN:$PATH" "$SCRIPT" \
+  --src "$SRC" \
+  --out "$OUT_DRY" \
+  --extra-css "$CSS_FILE" \
+  --dry-run > "$TMPDIR/extra-css.log"
+
+grep -Eq "Extra-css: $CSS_FILE" "$TMPDIR/extra-css.log"
+grep -F -- '--extra-css' "$TMPDIR/extra-css.log"
+grep -Fq "$CSS_FILE" "$TMPDIR/extra-css.log"
+grep -Fq 'DRY [azw3]:' "$TMPDIR/extra-css.log"
+
+CSS_SPACED="$TMPDIR/my styles/kindle.css"
+mkdir -p "$(dirname "$CSS_SPACED")"
+printf 'body { line-height: 1.4; }\n' > "$CSS_SPACED"
+
+PATH="$FAKEBIN:$PATH" "$SCRIPT" \
+  --src "$SRC" \
+  --out "$OUT_DRY" \
+  --extra-css "$CSS_SPACED" \
+  --dry-run > "$TMPDIR/extra-css-spaces.log"
+
+grep -Eq 'Extra-css: .*/my styles/kindle\.css' "$TMPDIR/extra-css-spaces.log"
+grep -Fq -- "--extra-css \"$CSS_SPACED\"" "$TMPDIR/extra-css-spaces.log"
+
+if "$SCRIPT" --src "$SRC" --extra-css "$TMPDIR/missing.css" --dry-run 2>/dev/null; then
+  echo "FAIL: missing extra-css file should fail"
+  exit 1
+fi
+
+if "$SCRIPT" --src "$SRC" --preflight --extra-css "$CSS_FILE" 2>/dev/null; then
+  echo "FAIL: preflight + extra-css should fail"
+  exit 1
+fi
+
 PATH="$FAKEBIN:$PATH" "$SCRIPT" \
   --src "$SRC" \
   --out "$OUT_DRY" \
@@ -727,5 +764,12 @@ PATH="$FAKEBIN:$PATH" "$SCRIPT" \
 
 grep -F -- '--output-profile kindle' "$TMPDIR/profile-cleanup-combined.log"
 grep -F -- '--enable-heuristics' "$TMPDIR/profile-cleanup-combined.log"
+
+PATH="$FAKEBIN:$PATH" "$SCRIPT" \
+  --src "$SRC" \
+  --out "$OUT" \
+  --extra-css "$CSS_FILE" > "$TMPDIR/extra-css-convert.log"
+
+grep -Fq 'converted from' "$OUT/Book One.azw3"
 
 echo "OK: bulk-epub-to-azw3 selftest passed"
