@@ -436,4 +436,32 @@ PATH="$FAKEBIN:$PATH" "$SCRIPT" \
 
 grep -Eq 'NOTE: DJVU conversion quality depends on an embedded text layer' "$TMPDIR/djvu-dry.log"
 
+PATH="$FAKEBIN:$PATH" "$SCRIPT" \
+  --target kindle \
+  --src "$SRC" \
+  --out "$OUT_DRY" \
+  --dry-run > "$TMPDIR/target-kindle.log"
+
+grep -Eq 'TARGET: kindle' "$TMPDIR/target-kindle.log"
+grep -Eq 'TO: azw3' "$TMPDIR/target-kindle.log"
+
+PATH="$FAKEBIN:$PATH" "$SCRIPT" \
+  --target archive \
+  --src "$SRC" \
+  --out "$TMPDIR/target-archive-out" \
+  --dry-run > "$TMPDIR/target-archive.log"
+
+grep -Eq 'TARGET: archive' "$TMPDIR/target-archive.log"
+grep -Eq 'TO: epub' "$TMPDIR/target-archive.log"
+
+if "$SCRIPT" --target foo --src "$SRC" 2>/dev/null; then
+  echo "FAIL: unknown --target should fail"
+  exit 1
+fi
+
+if "$SCRIPT" --target kindle --to mobi --src "$SRC" 2>/dev/null; then
+  echo "FAIL: --target with --to should fail"
+  exit 1
+fi
+
 echo "OK: bulk-epub-to-azw3 selftest passed"

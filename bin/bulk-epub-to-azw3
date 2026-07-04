@@ -7,7 +7,7 @@ PROGRAM_NAME="$(basename "$0")"
 usage() {
   cat <<EOF
 Usage:
-  $PROGRAM_NAME [--src INPUT_DIR] [--out OUTPUT_DIR] [--from FORMAT] [--to FORMAT] [--dry-run] [--force] [--manifest [PATH]] [--quarantine DIR] [--quarantine-copy]
+  $PROGRAM_NAME [--src INPUT_DIR] [--out OUTPUT_DIR] [--from FORMAT] [--to FORMAT | --target NAME] [--dry-run] [--force] [--manifest [PATH]] [--quarantine DIR] [--quarantine-copy]
   $PROGRAM_NAME [--src INPUT_DIR] [--preflight]
 
 Description:
@@ -26,6 +26,8 @@ Examples:
   $PROGRAM_NAME
   $PROGRAM_NAME --from epub --to azw3
   $PROGRAM_NAME --from mobi --to epub --src ./mobi --out ./epub
+  $PROGRAM_NAME --target kindle --src ./epub --dry-run
+  $PROGRAM_NAME --target archive --src ./epub --out ./archive
   $PROGRAM_NAME --src ./epub --out ./kindle --dry-run
   $PROGRAM_NAME --src ./epub --preflight
   $PROGRAM_NAME --src ./epub --out ./kindle --manifest
@@ -35,6 +37,7 @@ Options:
   --src              Source directory. Default: current working directory
   --from             Source ebook format extension. Default: epub
   --to               Target ebook format extension. Default: azw3
+  --target           Curated conversion target: kindle, kobo, archive, text
   --out              Output directory. Default: ./<to>
   --dry-run          Show what would be converted without creating output
   --force            Overwrite existing output files
@@ -48,7 +51,13 @@ Supported input formats:
   epub mobi azw azw3 pdf djvu docx doc txt html htm cbz cbr
 
 Supported output formats:
-  azw3 epub mobi pdf txt docx
+  azw3 epub mobi pdf txt docx kepub
+
+Curated targets:
+  kindle -> azw3
+  kobo -> kepub
+  archive -> epub
+  text -> txt
 EOF
 }
 
@@ -89,8 +98,34 @@ SUPPORTED_FROM_FORMATS=(
 )
 
 SUPPORTED_TO_FORMATS=(
-  azw3 epub mobi pdf txt docx
+  azw3 epub mobi pdf txt docx kepub
 )
+
+resolve_conversion_target() {
+  local value="${1,,}"
+
+  case "$value" in
+    kindle)
+      TARGET="kindle"
+      TO="azw3"
+      ;;
+    kobo)
+      TARGET="kobo"
+      TO="kepub"
+      ;;
+    archive)
+      TARGET="archive"
+      TO="epub"
+      ;;
+    text)
+      TARGET="text"
+      TO="txt"
+      ;;
+    *)
+      die "unknown target: $1"
+      ;;
+  esac
+}
 
 format_supported() {
   local format="$1"
@@ -445,6 +480,8 @@ OUT=""
 OUT_EXPLICIT=0
 FROM=epub
 TO=azw3
+TO_EXPLICIT=0
+TARGET=""
 DRY_RUN=0
 FORCE=0
 PREFLIGHT=0
@@ -490,10 +527,27 @@ while [[ $# -gt 0 ]]; do
     --to)
       [[ $# -ge 2 ]] || die "missing value for --to"
       TO="$2"
+      TO_EXPLICIT=1
       shift 2
       ;;
     --to=*)
       TO="${1#--to=}"
+      TO_EXPLICIT=1
+      shift
+      ;;
+    --target)
+      [[ $# -ge 2 ]] || die "missing value for --target"
+      if [[ -n "$TARGET" ]]; then
+        die "duplicate --target option"
+      fi
+      resolve_conversion_target "$2"
+      shift 2
+      ;;
+    --target=*)
+      if [[ -n "$TARGET" ]]; then
+        die "duplicate --target option"
+      fi
+      resolve_conversion_target "${1#--target=}"
       shift
       ;;
     --dry-run)
@@ -546,6 +600,10 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+if [[ -n "$TARGET" && "$TO_EXPLICIT" -eq 1 ]]; then
+  die "--target and --to are mutually exclusive"
+fi
 
 FROM="$(normalize_format "$FROM")"
 TO="$(normalize_format "$TO")"
@@ -613,6 +671,9 @@ failed=0
 echo "SRC: $SRC"
 echo "OUT: $OUT"
 echo "FROM: $FROM"
+if [[ -n "$TARGET" ]]; then
+  echo "TARGET: $TARGET"
+fi
 echo "TO: $TO"
 
 if [[ "$PREFLIGHT" -eq 0 ]]; then
