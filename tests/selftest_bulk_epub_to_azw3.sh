@@ -275,4 +275,90 @@ for record in records:
             raise SystemExit(f"missing output_sha256 on skipped record: {record}")
 PY
 
+if "$SCRIPT" --src "$SRC" --preflight --quarantine "$TMPDIR/bad-quarantine" 2>/dev/null; then
+  echo "FAIL: preflight + quarantine should fail"
+  exit 1
+fi
+
+if "$SCRIPT" --quarantine-copy --src "$SRC" --out "$OUT" 2>/dev/null; then
+  echo "FAIL: quarantine-copy without quarantine should fail"
+  exit 1
+fi
+
+QUARANTINE_SRC="$TMPDIR/quarantine-src"
+QUARANTINE_OUT="$TMPDIR/quarantine-out"
+QUARANTINE_DIR="$TMPDIR/quarantine"
+FAKEBIN_FAIL="$TMPDIR/fakebin-fail"
+
+mkdir -p "$QUARANTINE_SRC/nested" "$QUARANTINE_OUT" "$QUARANTINE_DIR" "$FAKEBIN_FAIL"
+
+create_valid_epub "$QUARANTINE_SRC/Book One.epub" "Book One" "Test Author" "en" "book-one-id" "yes" "yes"
+create_valid_epub "$QUARANTINE_SRC/nested/Book Two.epub" "Book Two" "Test Author" "en" "book-two-id" "yes" "yes"
+printf 'not an epub\n' > "$QUARANTINE_SRC/broken.epub"
+
+cat > "$FAKEBIN_FAIL/ebook-convert" <<'EOF'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+if [[ "${1:-}" == "--version" ]]; then
+  echo "ebook-convert fake 1.2.3"
+  exit 0
+fi
+
+input="$1"
+output="$2"
+
+if [[ "$(basename "$input")" == "Book One.epub" ]]; then
+  echo "simulated conversion failure" >&2
+  exit 1
+fi
+
+printf 'converted from %s\n' "$input" > "$output"
+EOF
+
+chmod +x "$FAKEBIN_FAIL/ebook-convert"
+
+set +e
+PATH="$FAKEBIN_FAIL:$PATH" "$SCRIPT" \
+  --src "$QUARANTINE_SRC" \
+  --out "$QUARANTINE_OUT" \
+  --quarantine "$QUARANTINE_DIR" > "$TMPDIR/quarantine-run.log"
+quarantine_status=$?
+set -e
+
+if [[ "$quarantine_status" -ne 2 ]]; then
+  echo "FAIL: expected exit code 2 when conversion fails, got $quarantine_status"
+  exit 1
+fi
+
+[[ -f "$QUARANTINE_DIR/invalid/broken.epub/reason.txt" ]]
+[[ -f "$QUARANTINE_DIR/invalid/broken.epub/source.path" ]]
+grep -qx 'not a valid EPUB' "$QUARANTINE_DIR/invalid/broken.epub/reason.txt"
+
+[[ -f "$QUARANTINE_DIR/failed/Book One.epub/reason.txt" ]]
+[[ -f "$QUARANTINE_DIR/failed/Book One.epub/source.path" ]]
+[[ -f "$QUARANTINE_DIR/failed/Book One.epub/convert.log" ]]
+grep -qx 'conversion failed' "$QUARANTINE_DIR/failed/Book One.epub/reason.txt"
+grep -q 'simulated conversion failure' "$QUARANTINE_DIR/failed/Book One.epub/convert.log"
+
+if [[ -L "$QUARANTINE_DIR/invalid/broken.epub/source.epub" ]]; then
+  [[ "$(readlink "$QUARANTINE_DIR/invalid/broken.epub/source.epub")" == "$QUARANTINE_SRC/broken.epub" ]]
+elif [[ ! -f "$QUARANTINE_DIR/invalid/broken.epub/source.epub" ]]; then
+  echo "FAIL: expected symlink or copy for quarantined invalid EPUB"
+  exit 1
+fi
+
+QUARANTINE_COPY_DIR="$TMPDIR/quarantine-copy"
+mkdir -p "$QUARANTINE_COPY_DIR"
+
+PATH="$FAKEBIN:$PATH" "$SCRIPT" \
+  --src "$QUARANTINE_SRC" \
+  --out "$TMPDIR/quarantine-copy-out" \
+  --quarantine "$QUARANTINE_COPY_DIR" \
+  --quarantine-copy \
+  --force > "$TMPDIR/quarantine-copy.log"
+
+[[ -f "$QUARANTINE_COPY_DIR/invalid/broken.epub/source.epub" ]]
+[[ ! -L "$QUARANTINE_COPY_DIR/invalid/broken.epub/source.epub" ]]
+
 echo "OK: bulk-epub-to-azw3 selftest passed"

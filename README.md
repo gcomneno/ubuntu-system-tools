@@ -228,6 +228,15 @@ bin/bulk-epub-to-azw3 --src ./epub --out ./kindle --dry-run --manifest ./reports
 
 Each manifest line records the source and output paths, status (`converted`, `skipped`, `invalid`, `failed`, or `planned` during dry-run), file sizes, SHA-256 checksums, timestamp, `ebook-convert` version, and skip or failure reasons when applicable.
 
+Quarantine invalid or failed EPUB files for review without moving the originals:
+
+```bash
+bin/bulk-epub-to-azw3 --src ./epub --out ./kindle --quarantine ./review
+bin/bulk-epub-to-azw3 --src ./epub --out ./kindle --quarantine ./review --quarantine-copy
+```
+
+Each quarantined item is recorded under `review/invalid/...` or `review/failed/...` with a reason file, source path, optional symlink to the original EPUB, and conversion logs for failures.
+
 Dependencies:
 
 ```bash

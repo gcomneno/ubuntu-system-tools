@@ -7,7 +7,7 @@ PROGRAM_NAME="$(basename "$0")"
 usage() {
   cat <<EOF
 Usage:
-  $PROGRAM_NAME [--src INPUT_DIR] [--out OUTPUT_DIR] [--dry-run] [--force] [--manifest [PATH]]
+  $PROGRAM_NAME [--src INPUT_DIR] [--out OUTPUT_DIR] [--dry-run] [--force] [--manifest [PATH]] [--quarantine DIR] [--quarantine-copy]
   $PROGRAM_NAME [--src INPUT_DIR] [--preflight]
 
 Description:
@@ -26,15 +26,18 @@ Examples:
   $PROGRAM_NAME --src ./epub --preflight
   $PROGRAM_NAME --src ./epub --out ./kindle --manifest
   $PROGRAM_NAME --src ./epub --out ./kindle --manifest ./reports/run.jsonl
+  $PROGRAM_NAME --src ./epub --out ./kindle --quarantine ./review
 
 Options:
-  --src        Source directory. Default: current working directory
-  --out        Output directory. Default: ./azw3
-  --dry-run    Show what would be converted without creating output
-  --force      Overwrite existing .azw3 files
-  --manifest   Write a JSONL conversion manifest. Default path: OUT/conversion-manifest.jsonl
-  --preflight  Inspect EPUB metadata without converting
-  -h, --help   Show this help
+  --src              Source directory. Default: current working directory
+  --out              Output directory. Default: ./azw3
+  --dry-run          Show what would be converted without creating output
+  --force            Overwrite existing .azw3 files
+  --manifest         Write a JSONL conversion manifest. Default path: OUT/conversion-manifest.jsonl
+  --quarantine DIR   Record invalid or failed EPUB files under DIR for review
+  --quarantine-copy  Copy quarantined EPUB files instead of creating symlinks
+  --preflight        Inspect EPUB metadata without converting
+  -h, --help         Show this help
 EOF
 }
 
@@ -322,6 +325,37 @@ print(json.dumps(record, ensure_ascii=False))
 PY
 }
 
+quarantine_attach_source() {
+  local entry_dir="$1"
+  local source_file="$2"
+
+  if [[ "$QUARANTINE_COPY" -eq 1 ]]; then
+    cp -a "$source_file" "$entry_dir/source.epub"
+  elif ! ln -s "$source_file" "$entry_dir/source.epub" 2>/dev/null; then
+    echo "  QUARANTINE: symlink unavailable for $source_file" >&2
+  fi
+}
+
+quarantine_record() {
+  local kind="$1"
+  local rel="$2"
+  local source_file="$3"
+  local reason="$4"
+  local log_file="${5:-}"
+
+  local entry_dir="$QUARANTINE/$kind/$rel"
+
+  mkdir -p "$entry_dir"
+
+  printf '%s\n' "$reason" >"$entry_dir/reason.txt"
+  printf '%s\n' "$rel" >"$entry_dir/source.path"
+  quarantine_attach_source "$entry_dir" "$source_file"
+
+  if [[ -n "$log_file" && -f "$log_file" ]]; then
+    cp -a "$log_file" "$entry_dir/convert.log"
+  fi
+}
+
 SRC="$PWD"
 OUT="$PWD/azw3"
 DRY_RUN=0
@@ -329,6 +363,9 @@ FORCE=0
 PREFLIGHT=0
 MANIFEST_ENABLED=0
 MANIFEST=""
+QUARANTINE_ENABLED=0
+QUARANTINE=""
+QUARANTINE_COPY=0
 EBOOK_CONVERT_VERSION=""
 
 while [[ $# -gt 0 ]]; do
@@ -377,6 +414,21 @@ while [[ $# -gt 0 ]]; do
       MANIFEST_ENABLED=1
       shift
       ;;
+    --quarantine)
+      [[ $# -ge 2 ]] || die "missing value for --quarantine"
+      QUARANTINE="$2"
+      QUARANTINE_ENABLED=1
+      shift 2
+      ;;
+    --quarantine=*)
+      QUARANTINE="${1#--quarantine=}"
+      QUARANTINE_ENABLED=1
+      shift
+      ;;
+    --quarantine-copy)
+      QUARANTINE_COPY=1
+      shift
+      ;;
     -h|--help)
       usage
       exit 0
@@ -407,6 +459,8 @@ if [[ "$PREFLIGHT" -eq 0 && "$DRY_RUN" -eq 0 ]]; then
 fi
 
 [[ "$PREFLIGHT" -eq 0 || "$MANIFEST_ENABLED" -eq 0 ]] || die "--manifest cannot be used with --preflight"
+[[ "$PREFLIGHT" -eq 0 || "$QUARANTINE_ENABLED" -eq 0 ]] || die "--quarantine cannot be used with --preflight"
+[[ "$QUARANTINE_COPY" -eq 0 || "$QUARANTINE_ENABLED" -eq 1 ]] || die "--quarantine-copy requires --quarantine"
 
 [[ -d "$SRC" ]] || die "source directory does not exist: $SRC"
 
@@ -418,6 +472,10 @@ if [[ "$MANIFEST_ENABLED" -eq 1 ]]; then
     MANIFEST="$OUT/conversion-manifest.jsonl"
   fi
   MANIFEST="$(realpath -m "$MANIFEST")"
+fi
+
+if [[ "$QUARANTINE_ENABLED" -eq 1 ]]; then
+  QUARANTINE="$(realpath -m "$QUARANTINE")"
 fi
 
 [[ "$SRC" != "$OUT" ]] || die "SRC and OUT must not be the same directory."
@@ -451,6 +509,11 @@ if [[ "$MANIFEST_ENABLED" -eq 1 ]]; then
   echo "Manifest: $MANIFEST"
 fi
 
+if [[ "$QUARANTINE_ENABLED" -eq 1 && "$PREFLIGHT" -eq 0 && "$DRY_RUN" -eq 0 ]]; then
+  mkdir -p "$QUARANTINE"
+  echo "Quarantine: $QUARANTINE"
+fi
+
 echo
 
 while IFS= read -r -d '' file; do
@@ -467,6 +530,9 @@ while IFS= read -r -d '' file; do
     invalid=$((invalid + 1))
     if [[ "$MANIFEST_ENABLED" -eq 1 ]]; then
       manifest_write_record "$rel" "$out_rel" "invalid" "not a valid EPUB" "" "$file" ""
+    fi
+    if [[ "$QUARANTINE_ENABLED" -eq 1 && "$PREFLIGHT" -eq 0 && "$DRY_RUN" -eq 0 ]]; then
+      quarantine_record "invalid" "$rel" "$file" "not a valid EPUB"
     fi
     echo
     continue
@@ -520,6 +586,9 @@ while IFS= read -r -d '' file; do
     failed=$((failed + 1))
     if [[ "$MANIFEST_ENABLED" -eq 1 ]]; then
       manifest_write_record "$rel" "$out_rel" "failed" "conversion failed" "$log" "$file" ""
+    fi
+    if [[ "$QUARANTINE_ENABLED" -eq 1 ]]; then
+      quarantine_record "failed" "$rel" "$file" "conversion failed" "$log"
     fi
     echo "  FAILED: see log: $log"
   fi
