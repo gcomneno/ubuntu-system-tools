@@ -7,7 +7,7 @@ PROGRAM_NAME="$(basename "$0")"
 usage() {
   cat <<EOF
 Usage:
-  $PROGRAM_NAME [--src INPUT_DIR] [--out OUTPUT_DIR] [--dry-run] [--force]
+  $PROGRAM_NAME [--src INPUT_DIR] [--out OUTPUT_DIR] [--dry-run] [--force] [--manifest [PATH]]
   $PROGRAM_NAME [--src INPUT_DIR] [--preflight]
 
 Description:
@@ -24,12 +24,15 @@ Examples:
   $PROGRAM_NAME --src ./epub --out ./kindle
   $PROGRAM_NAME --src ./epub --out ./kindle --force
   $PROGRAM_NAME --src ./epub --preflight
+  $PROGRAM_NAME --src ./epub --out ./kindle --manifest
+  $PROGRAM_NAME --src ./epub --out ./kindle --manifest ./reports/run.jsonl
 
 Options:
   --src        Source directory. Default: current working directory
   --out        Output directory. Default: ./azw3
   --dry-run    Show what would be converted without creating output
   --force      Overwrite existing .azw3 files
+  --manifest   Write a JSONL conversion manifest. Default path: OUT/conversion-manifest.jsonl
   --preflight  Inspect EPUB metadata without converting
   -h, --help   Show this help
 EOF
@@ -222,11 +225,111 @@ if __name__ == "__main__":
 PYCODE
 }
 
+file_size_bytes() {
+  local file="$1"
+
+  stat -c '%s' "$file" 2>/dev/null || true
+}
+
+file_sha256() {
+  local file="$1"
+
+  sha256sum "$file" | awk '{print $1}'
+}
+
+manifest_write_record() {
+  local source_rel="$1"
+  local output_rel="$2"
+  local status="$3"
+  local reason="${4:-}"
+  local log_path="${5:-}"
+  local src_file="$6"
+  local out_file="${7:-}"
+
+  local source_size=""
+  local source_sha256=""
+  local output_size=""
+  local output_sha256=""
+
+  if [[ -f "$src_file" ]]; then
+    source_size="$(file_size_bytes "$src_file")"
+    source_sha256="$(file_sha256 "$src_file")"
+  fi
+
+  if [[ -n "$out_file" && -f "$out_file" ]]; then
+    output_size="$(file_size_bytes "$out_file")"
+    output_sha256="$(file_sha256 "$out_file")"
+  fi
+
+  MF_SOURCE="$source_rel" \
+  MF_OUTPUT="$output_rel" \
+  MF_STATUS="$status" \
+  MF_SOURCE_SIZE="$source_size" \
+  MF_SOURCE_SHA256="$source_sha256" \
+  MF_OUTPUT_SIZE="$output_size" \
+  MF_OUTPUT_SHA256="$output_sha256" \
+  MF_TIMESTAMP="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+  MF_EBOOK_CONVERT_VERSION="$EBOOK_CONVERT_VERSION" \
+  MF_LOG_PATH="$log_path" \
+  MF_REASON="$reason" \
+  python3 - >>"$MANIFEST" <<'PY'
+import json
+import os
+
+
+def optional_int(value: str) -> int | None:
+    if not value:
+        return None
+    return int(value)
+
+
+record = {
+    "source": os.environ["MF_SOURCE"],
+    "output": os.environ["MF_OUTPUT"],
+    "status": os.environ["MF_STATUS"],
+    "timestamp": os.environ["MF_TIMESTAMP"],
+}
+
+source_size = optional_int(os.environ.get("MF_SOURCE_SIZE", ""))
+if source_size is not None:
+    record["source_size"] = source_size
+
+source_sha = os.environ.get("MF_SOURCE_SHA256", "")
+if source_sha:
+    record["source_sha256"] = source_sha
+
+output_size = optional_int(os.environ.get("MF_OUTPUT_SIZE", ""))
+if output_size is not None:
+    record["output_size"] = output_size
+
+output_sha = os.environ.get("MF_OUTPUT_SHA256", "")
+if output_sha:
+    record["output_sha256"] = output_sha
+
+version = os.environ.get("MF_EBOOK_CONVERT_VERSION", "")
+if version:
+    record["ebook_convert_version"] = version
+
+log_path = os.environ.get("MF_LOG_PATH", "")
+if log_path:
+    record["log_path"] = log_path
+
+reason = os.environ.get("MF_REASON", "")
+if reason:
+    record["reason"] = reason
+
+print(json.dumps(record, ensure_ascii=False))
+PY
+}
+
 SRC="$PWD"
 OUT="$PWD/azw3"
 DRY_RUN=0
 FORCE=0
 PREFLIGHT=0
+MANIFEST_ENABLED=0
+MANIFEST=""
+EBOOK_CONVERT_VERSION=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -260,6 +363,20 @@ while [[ $# -gt 0 ]]; do
       PREFLIGHT=1
       shift
       ;;
+    --manifest)
+      MANIFEST_ENABLED=1
+      if [[ $# -ge 2 && "$2" != -* ]]; then
+        MANIFEST="$2"
+        shift 2
+      else
+        shift
+      fi
+      ;;
+    --manifest=*)
+      MANIFEST="${1#--manifest=}"
+      MANIFEST_ENABLED=1
+      shift
+      ;;
     -h|--help)
       usage
       exit 0
@@ -279,14 +396,29 @@ if [[ "$PREFLIGHT" -eq 1 ]]; then
   need_cmd python3
 fi
 
+if [[ "$MANIFEST_ENABLED" -eq 1 ]]; then
+  need_cmd python3
+  need_cmd sha256sum
+  need_cmd date
+fi
+
 if [[ "$PREFLIGHT" -eq 0 && "$DRY_RUN" -eq 0 ]]; then
   need_cmd ebook-convert
 fi
+
+[[ "$PREFLIGHT" -eq 0 || "$MANIFEST_ENABLED" -eq 0 ]] || die "--manifest cannot be used with --preflight"
 
 [[ -d "$SRC" ]] || die "source directory does not exist: $SRC"
 
 SRC="$(realpath "$SRC")"
 OUT="$(realpath -m "$OUT")"
+
+if [[ "$MANIFEST_ENABLED" -eq 1 ]]; then
+  if [[ -z "$MANIFEST" ]]; then
+    MANIFEST="$OUT/conversion-manifest.jsonl"
+  fi
+  MANIFEST="$(realpath -m "$MANIFEST")"
+fi
 
 [[ "$SRC" != "$OUT" ]] || die "SRC and OUT must not be the same directory."
 
@@ -310,19 +442,32 @@ else
   mkdir -p "$OUT"
 fi
 
+if [[ "$MANIFEST_ENABLED" -eq 1 ]]; then
+  if [[ "$DRY_RUN" -eq 0 ]]; then
+    EBOOK_CONVERT_VERSION="$(ebook-convert --version 2>/dev/null | head -n1 || true)"
+  fi
+  mkdir -p "$(dirname "$MANIFEST")"
+  : >"$MANIFEST"
+  echo "Manifest: $MANIFEST"
+fi
+
 echo
 
 while IFS= read -r -d '' file; do
   total=$((total + 1))
 
   rel="${file#"$SRC"/}"
-  dest="$OUT/${rel%.*}.azw3"
+  out_rel="${rel%.*}.azw3"
+  dest="$OUT/$out_rel"
 
   echo "File: $rel"
 
   if ! is_valid_epub "$file"; then
     echo "  INVALID: not a valid EPUB"
     invalid=$((invalid + 1))
+    if [[ "$MANIFEST_ENABLED" -eq 1 ]]; then
+      manifest_write_record "$rel" "$out_rel" "invalid" "not a valid EPUB" "" "$file" ""
+    fi
     echo
     continue
   fi
@@ -339,12 +484,18 @@ while IFS= read -r -d '' file; do
   if [[ -f "$dest" && "$FORCE" -eq 0 ]]; then
     echo "  SKIP: already exists: $dest"
     skipped=$((skipped + 1))
+    if [[ "$MANIFEST_ENABLED" -eq 1 ]]; then
+      manifest_write_record "$rel" "$out_rel" "skipped" "already exists" "" "$file" "$dest"
+    fi
     echo
     continue
   fi
 
   if [[ "$DRY_RUN" -eq 1 ]]; then
     echo "  DRY: ebook-convert \"$file\" \"$dest\""
+    if [[ "$MANIFEST_ENABLED" -eq 1 ]]; then
+      manifest_write_record "$rel" "$out_rel" "planned" "" "" "$file" ""
+    fi
     echo
     continue
   fi
@@ -360,10 +511,16 @@ while IFS= read -r -d '' file; do
     mv -f "$tmp" "$dest"
     rm -f "$log"
     converted=$((converted + 1))
+    if [[ "$MANIFEST_ENABLED" -eq 1 ]]; then
+      manifest_write_record "$rel" "$out_rel" "converted" "" "" "$file" "$dest"
+    fi
     echo "  OK"
   else
     rm -f "$tmp"
     failed=$((failed + 1))
+    if [[ "$MANIFEST_ENABLED" -eq 1 ]]; then
+      manifest_write_record "$rel" "$out_rel" "failed" "conversion failed" "$log" "$file" ""
+    fi
     echo "  FAILED: see log: $log"
   fi
 

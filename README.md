@@ -219,6 +219,15 @@ bin/bulk-epub-to-azw3 --preflight
 
 The preflight report includes the OPF package path, title, creator, language, identifier, cover detection, spine item count, and basic warnings for missing metadata.
 
+Write a JSONL conversion manifest with checksums and tool versions:
+
+```bash
+bin/bulk-epub-to-azw3 --src ./epub --out ./kindle --manifest
+bin/bulk-epub-to-azw3 --src ./epub --out ./kindle --dry-run --manifest ./reports/plan.jsonl
+```
+
+Each manifest line records the source and output paths, status (`converted`, `skipped`, `invalid`, `failed`, or `planned` during dry-run), file sizes, SHA-256 checksums, timestamp, `ebook-convert` version, and skip or failure reasons when applicable.
+
 Dependencies:
 
 ```bash
