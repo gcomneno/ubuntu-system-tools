@@ -218,7 +218,18 @@ When `--out` is omitted, the output directory defaults to `./<to>` (for example 
 
 Supported input formats: `epub`, `mobi`, `azw`, `azw3`, `pdf`, `djvu`, `docx`, `doc`, `txt`, `html`, `htm`, `cbz`, `cbr`.
 
-Supported output formats: `azw3`, `epub`, `mobi`, `pdf`, `txt`, `docx`.
+Supported output formats: `azw3`, `epub`, `mobi`, `pdf`, `txt`, `docx`, `kepub`.
+
+Curated conversion targets:
+
+```bash
+bin/bulk-ebook-convert --target kindle --src ./epub
+bin/bulk-ebook-convert --target kobo --src ./epub
+bin/bulk-ebook-convert --target archive --src ./mixed --out ./archive
+bin/bulk-ebook-convert --target text --src ./epub
+```
+
+Target mapping: `kindle` → `azw3`, `kobo` → `kepub`, `archive` → `epub`, `text` → `txt`. `--target` cannot be combined with `--to`.
 
 Unsupported formats are rejected before scanning. `pdf` and `djvu` sources emit quality warnings before conversion.
 
