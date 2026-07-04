@@ -278,6 +278,15 @@ bin/bulk-epub-to-azw3 --src ./epub --out ./kindle --debug-failed ./debug
 
 On failure, the tool reruns `ebook-convert` with `--debug-pipeline` and writes per-book debug output under `./debug/...`.
 
+Control Kindle cover handling during conversion:
+
+```bash
+bin/bulk-epub-to-azw3 --src ./epub --out ./kindle --cover-policy prefer-metadata --dry-run
+bin/bulk-epub-to-azw3 --src ./epub --out ./kindle --cover-policy remove-first-image
+```
+
+Policies: `keep` (default), `prefer-metadata` (`--prefer-metadata-cover`), `remove-first-image` (`--remove-first-image`).
+
 Dependencies:
 
 ```bash

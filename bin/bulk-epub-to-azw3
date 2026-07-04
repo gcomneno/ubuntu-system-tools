@@ -7,7 +7,7 @@ PROGRAM_NAME="$(basename "$0")"
 usage() {
   cat <<EOF
 Usage:
-  $PROGRAM_NAME [--src INPUT_DIR] [--out OUTPUT_DIR] [--from FORMAT] [--to FORMAT | --target NAME] [--dry-run] [--force] [--manifest [PATH]] [--quarantine DIR] [--quarantine-copy] [--debug-failed DIR]
+  $PROGRAM_NAME [--src INPUT_DIR] [--out OUTPUT_DIR] [--from FORMAT] [--to FORMAT | --target NAME] [--dry-run] [--force] [--cover-policy POLICY] [--manifest [PATH]] [--quarantine DIR] [--quarantine-copy] [--debug-failed DIR]
   $PROGRAM_NAME [--src INPUT_DIR] [--preflight]
 
 Description:
@@ -34,6 +34,7 @@ Examples:
   $PROGRAM_NAME --src ./epub --out ./kindle --manifest
   $PROGRAM_NAME --src ./epub --out ./kindle --quarantine ./review
   $PROGRAM_NAME --src ./epub --out ./kindle --debug-failed ./debug
+  $PROGRAM_NAME --src ./epub --out ./kindle --cover-policy prefer-metadata --dry-run
 
 Options:
   --src              Source directory. Default: current working directory
@@ -43,6 +44,7 @@ Options:
   --out              Output directory. Default: ./<to>
   --dry-run          Show what would be converted without creating output
   --force            Overwrite existing output files
+  --cover-policy     Kindle cover policy: keep, prefer-metadata, remove-first-image
   --manifest         Write a JSONL conversion manifest. Default path: OUT/conversion-manifest.jsonl
   --quarantine DIR   Record invalid or failed source files under DIR for review
   --quarantine-copy  Copy quarantined source files instead of creating symlinks
@@ -126,6 +128,25 @@ resolve_conversion_target() {
       ;;
     *)
       die "unknown target: $1"
+      ;;
+  esac
+}
+
+resolve_cover_policy() {
+  COVER_POLICY="${1,,}"
+  EBOOK_CONVERT_EXTRA_ARGS=()
+
+  case "$COVER_POLICY" in
+    keep)
+      ;;
+    prefer-metadata)
+      EBOOK_CONVERT_EXTRA_ARGS=(--prefer-metadata-cover)
+      ;;
+    remove-first-image)
+      EBOOK_CONVERT_EXTRA_ARGS=(--remove-first-image)
+      ;;
+    *)
+      die "unknown cover policy: $1"
       ;;
   esac
 }
@@ -500,7 +521,7 @@ export_debug_pipeline_on_failure() {
   local debug_dir="$4"
 
   mkdir -p "$debug_dir"
-  ebook-convert "$file" "$tmp" --debug-pipeline "$debug_dir" >>"$log" 2>&1 || true
+  ebook-convert "$file" "$tmp" "${EBOOK_CONVERT_EXTRA_ARGS[@]}" --debug-pipeline "$debug_dir" >>"$log" 2>&1 || true
 }
 
 quarantine_attach_source() {
@@ -553,6 +574,8 @@ QUARANTINE=""
 QUARANTINE_COPY=0
 DEBUG_FAILED_ENABLED=0
 DEBUG_FAILED=""
+COVER_POLICY="keep"
+EBOOK_CONVERT_EXTRA_ARGS=()
 EBOOK_CONVERT_VERSION=""
 INVALID_REASON=""
 
@@ -619,6 +642,15 @@ while [[ $# -gt 0 ]]; do
       ;;
     --force)
       FORCE=1
+      shift
+      ;;
+    --cover-policy)
+      [[ $# -ge 2 ]] || die "missing value for --cover-policy"
+      resolve_cover_policy "$2"
+      shift 2
+      ;;
+    --cover-policy=*)
+      resolve_cover_policy "${1#--cover-policy=}"
       shift
       ;;
     --preflight)
@@ -727,6 +759,7 @@ fi
 [[ "$PREFLIGHT" -eq 0 || "$MANIFEST_ENABLED" -eq 0 ]] || die "--manifest cannot be used with --preflight"
 [[ "$PREFLIGHT" -eq 0 || "$QUARANTINE_ENABLED" -eq 0 ]] || die "--quarantine cannot be used with --preflight"
 [[ "$PREFLIGHT" -eq 0 || "$DEBUG_FAILED_ENABLED" -eq 0 ]] || die "--debug-failed cannot be used with --preflight"
+[[ "$PREFLIGHT" -eq 0 || "$COVER_POLICY" == "keep" ]] || die "--cover-policy cannot be used with --preflight"
 [[ "$PREFLIGHT" -eq 0 || "$FROM" == "epub" ]] || die "--preflight requires --from epub"
 [[ "$QUARANTINE_COPY" -eq 0 || "$QUARANTINE_ENABLED" -eq 1 ]] || die "--quarantine-copy requires --quarantine"
 
@@ -782,6 +815,10 @@ fi
 echo "TO: $TO"
 if [[ "$MULTI_TARGET" -eq 1 ]]; then
   echo "Targets: $TO"
+fi
+
+if [[ "$PREFLIGHT" -eq 0 && "$COVER_POLICY" != "keep" ]]; then
+  echo "Cover-policy: $COVER_POLICY (${EBOOK_CONVERT_EXTRA_ARGS[*]})"
 fi
 
 if [[ "$PREFLIGHT" -eq 0 ]]; then
@@ -871,7 +908,11 @@ while IFS= read -r -d '' file; do
     fi
 
     if [[ "$DRY_RUN" -eq 1 ]]; then
-      echo "  DRY [$current_to]: ebook-convert \"$file\" \"$dest\""
+      if [[ ${#EBOOK_CONVERT_EXTRA_ARGS[@]} -gt 0 ]]; then
+        echo "  DRY [$current_to]: ebook-convert \"$file\" \"$dest\" ${EBOOK_CONVERT_EXTRA_ARGS[*]}"
+      else
+        echo "  DRY [$current_to]: ebook-convert \"$file\" \"$dest\""
+      fi
       if [[ "$DEBUG_FAILED_ENABLED" -eq 1 ]]; then
         echo "  DEBUG-FAIL [$current_to]: would write to $(debug_failed_dir_for "$rel" "$current_to") on failure"
       fi
@@ -888,7 +929,7 @@ while IFS= read -r -d '' file; do
 
     echo "  CONVERT [$current_to] -> $dest"
 
-    if ebook-convert "$file" "$tmp" >"$log" 2>&1; then
+    if ebook-convert "$file" "$tmp" "${EBOOK_CONVERT_EXTRA_ARGS[@]}" >"$log" 2>&1; then
       mv -f "$tmp" "$dest"
       rm -f "$log"
       converted=$((converted + 1))

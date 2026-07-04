@@ -575,4 +575,47 @@ if "$SCRIPT" --src "$SRC" --preflight --debug-failed "$DEBUG_DIR" 2>/dev/null; t
   exit 1
 fi
 
+PATH="$FAKEBIN:$PATH" "$SCRIPT" \
+  --src "$SRC" \
+  --out "$OUT_DRY" \
+  --cover-policy prefer-metadata \
+  --dry-run > "$TMPDIR/cover-prefer.log"
+
+grep -Eq 'Cover-policy: prefer-metadata \(--prefer-metadata-cover\)' "$TMPDIR/cover-prefer.log"
+grep -F -- '--prefer-metadata-cover' "$TMPDIR/cover-prefer.log"
+grep -Fq 'DRY [azw3]:' "$TMPDIR/cover-prefer.log"
+grep -Fq 'Book One.epub' "$TMPDIR/cover-prefer.log"
+grep -Fq 'Book One.azw3' "$TMPDIR/cover-prefer.log"
+
+PATH="$FAKEBIN:$PATH" "$SCRIPT" \
+  --src "$SRC" \
+  --out "$OUT_DRY" \
+  --cover-policy remove-first-image \
+  --dry-run > "$TMPDIR/cover-remove.log"
+
+grep -Eq 'Cover-policy: remove-first-image \(--remove-first-image\)' "$TMPDIR/cover-remove.log"
+grep -F -- '--remove-first-image' "$TMPDIR/cover-remove.log"
+grep -Fq 'DRY [azw3]:' "$TMPDIR/cover-remove.log"
+
+PATH="$FAKEBIN:$PATH" "$SCRIPT" \
+  --src "$SRC" \
+  --out "$OUT_DRY" \
+  --cover-policy keep \
+  --dry-run > "$TMPDIR/cover-keep.log"
+
+if grep -Eq 'Cover-policy:' "$TMPDIR/cover-keep.log"; then
+  echo "FAIL: keep cover policy should not emit cover-policy banner"
+  exit 1
+fi
+
+if "$SCRIPT" --src "$SRC" --cover-policy bad-policy --dry-run 2>/dev/null; then
+  echo "FAIL: unknown cover policy should fail"
+  exit 1
+fi
+
+if "$SCRIPT" --src "$SRC" --preflight --cover-policy prefer-metadata 2>/dev/null; then
+  echo "FAIL: preflight + cover-policy should fail"
+  exit 1
+fi
+
 echo "OK: bulk-epub-to-azw3 selftest passed"
