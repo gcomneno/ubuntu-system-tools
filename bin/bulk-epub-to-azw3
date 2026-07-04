@@ -7,7 +7,7 @@ PROGRAM_NAME="$(basename "$0")"
 usage() {
   cat <<EOF
 Usage:
-  $PROGRAM_NAME [--src INPUT_DIR] [--out OUTPUT_DIR] [--from FORMAT] [--to FORMAT | --target NAME] [--dry-run] [--force] [--cover-policy POLICY] [--manifest [PATH]] [--quarantine DIR] [--quarantine-copy] [--debug-failed DIR]
+  $PROGRAM_NAME [--src INPUT_DIR] [--out OUTPUT_DIR] [--from FORMAT] [--to FORMAT | --target NAME] [--dry-run] [--force] [--cover-policy POLICY] [--cleanup MODE] [--manifest [PATH]] [--quarantine DIR] [--quarantine-copy] [--debug-failed DIR]
   $PROGRAM_NAME [--src INPUT_DIR] [--preflight]
 
 Description:
@@ -35,6 +35,7 @@ Examples:
   $PROGRAM_NAME --src ./epub --out ./kindle --quarantine ./review
   $PROGRAM_NAME --src ./epub --out ./kindle --debug-failed ./debug
   $PROGRAM_NAME --src ./epub --out ./kindle --cover-policy prefer-metadata --dry-run
+  $PROGRAM_NAME --src ./epub --out ./kindle --cleanup conservative --dry-run
 
 Options:
   --src              Source directory. Default: current working directory
@@ -45,6 +46,7 @@ Options:
   --dry-run          Show what would be converted without creating output
   --force            Overwrite existing output files
   --cover-policy     Kindle cover policy: keep, prefer-metadata, remove-first-image
+  --cleanup          Typography cleanup preset: off, conservative
   --manifest         Write a JSONL conversion manifest. Default path: OUT/conversion-manifest.jsonl
   --quarantine DIR   Record invalid or failed source files under DIR for review
   --quarantine-copy  Copy quarantined source files instead of creating symlinks
@@ -149,6 +151,32 @@ resolve_cover_policy() {
       die "unknown cover policy: $1"
       ;;
   esac
+}
+
+resolve_cleanup_mode() {
+  CLEANUP="${1,,}"
+  CLEANUP_CONVERT_ARGS=()
+
+  case "$CLEANUP" in
+    off)
+      ;;
+    conservative)
+      CLEANUP_CONVERT_ARGS=(--enable-heuristics)
+      ;;
+    *)
+      die "unknown cleanup mode: $1"
+      ;;
+  esac
+}
+
+rebuild_convert_extra_args() {
+  CONVERT_EXTRA_ARGS=()
+  if [[ ${#EBOOK_CONVERT_EXTRA_ARGS[@]} -gt 0 ]]; then
+    CONVERT_EXTRA_ARGS+=("${EBOOK_CONVERT_EXTRA_ARGS[@]}")
+  fi
+  if [[ ${#CLEANUP_CONVERT_ARGS[@]} -gt 0 ]]; then
+    CONVERT_EXTRA_ARGS+=("${CLEANUP_CONVERT_ARGS[@]}")
+  fi
 }
 
 format_supported() {
@@ -521,7 +549,7 @@ export_debug_pipeline_on_failure() {
   local debug_dir="$4"
 
   mkdir -p "$debug_dir"
-  ebook-convert "$file" "$tmp" "${EBOOK_CONVERT_EXTRA_ARGS[@]}" --debug-pipeline "$debug_dir" >>"$log" 2>&1 || true
+  ebook-convert "$file" "$tmp" "${CONVERT_EXTRA_ARGS[@]}" --debug-pipeline "$debug_dir" >>"$log" 2>&1 || true
 }
 
 quarantine_attach_source() {
@@ -576,6 +604,9 @@ DEBUG_FAILED_ENABLED=0
 DEBUG_FAILED=""
 COVER_POLICY="keep"
 EBOOK_CONVERT_EXTRA_ARGS=()
+CLEANUP="off"
+CLEANUP_CONVERT_ARGS=()
+CONVERT_EXTRA_ARGS=()
 EBOOK_CONVERT_VERSION=""
 INVALID_REASON=""
 
@@ -651,6 +682,15 @@ while [[ $# -gt 0 ]]; do
       ;;
     --cover-policy=*)
       resolve_cover_policy "${1#--cover-policy=}"
+      shift
+      ;;
+    --cleanup)
+      [[ $# -ge 2 ]] || die "missing value for --cleanup"
+      resolve_cleanup_mode "$2"
+      shift 2
+      ;;
+    --cleanup=*)
+      resolve_cleanup_mode "${1#--cleanup=}"
       shift
       ;;
     --preflight)
@@ -760,7 +800,10 @@ fi
 [[ "$PREFLIGHT" -eq 0 || "$QUARANTINE_ENABLED" -eq 0 ]] || die "--quarantine cannot be used with --preflight"
 [[ "$PREFLIGHT" -eq 0 || "$DEBUG_FAILED_ENABLED" -eq 0 ]] || die "--debug-failed cannot be used with --preflight"
 [[ "$PREFLIGHT" -eq 0 || "$COVER_POLICY" == "keep" ]] || die "--cover-policy cannot be used with --preflight"
+[[ "$PREFLIGHT" -eq 0 || "$CLEANUP" == "off" ]] || die "--cleanup cannot be used with --preflight"
 [[ "$PREFLIGHT" -eq 0 || "$FROM" == "epub" ]] || die "--preflight requires --from epub"
+
+rebuild_convert_extra_args
 [[ "$QUARANTINE_COPY" -eq 0 || "$QUARANTINE_ENABLED" -eq 1 ]] || die "--quarantine-copy requires --quarantine"
 
 [[ -d "$SRC" ]] || die "source directory does not exist: $SRC"
@@ -819,6 +862,10 @@ fi
 
 if [[ "$PREFLIGHT" -eq 0 && "$COVER_POLICY" != "keep" ]]; then
   echo "Cover-policy: $COVER_POLICY (${EBOOK_CONVERT_EXTRA_ARGS[*]})"
+fi
+
+if [[ "$PREFLIGHT" -eq 0 && "$CLEANUP" != "off" ]]; then
+  echo "Cleanup: $CLEANUP (${CLEANUP_CONVERT_ARGS[*]})"
 fi
 
 if [[ "$PREFLIGHT" -eq 0 ]]; then
@@ -908,8 +955,8 @@ while IFS= read -r -d '' file; do
     fi
 
     if [[ "$DRY_RUN" -eq 1 ]]; then
-      if [[ ${#EBOOK_CONVERT_EXTRA_ARGS[@]} -gt 0 ]]; then
-        echo "  DRY [$current_to]: ebook-convert \"$file\" \"$dest\" ${EBOOK_CONVERT_EXTRA_ARGS[*]}"
+      if [[ ${#CONVERT_EXTRA_ARGS[@]} -gt 0 ]]; then
+        echo "  DRY [$current_to]: ebook-convert \"$file\" \"$dest\" ${CONVERT_EXTRA_ARGS[*]}"
       else
         echo "  DRY [$current_to]: ebook-convert \"$file\" \"$dest\""
       fi
@@ -929,7 +976,7 @@ while IFS= read -r -d '' file; do
 
     echo "  CONVERT [$current_to] -> $dest"
 
-    if ebook-convert "$file" "$tmp" "${EBOOK_CONVERT_EXTRA_ARGS[@]}" >"$log" 2>&1; then
+    if ebook-convert "$file" "$tmp" "${CONVERT_EXTRA_ARGS[@]}" >"$log" 2>&1; then
       mv -f "$tmp" "$dest"
       rm -f "$log"
       converted=$((converted + 1))
