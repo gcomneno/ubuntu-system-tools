@@ -305,11 +305,36 @@ if [[ "${1:-}" == "--version" ]]; then
   exit 0
 fi
 
-input="$1"
-output="$2"
+input=""
+output=""
+debug_pipeline=""
 
-if [[ "$(basename "$input")" == "Book One.epub" ]]; then
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --debug-pipeline)
+      debug_pipeline="$2"
+      shift 2
+      ;;
+    *)
+      if [[ -z "$input" ]]; then
+        input="$1"
+      elif [[ -z "$output" ]]; then
+        output="$1"
+      fi
+      shift
+      ;;
+  esac
+done
+
+if [[ "$(basename "$input")" == "Book One.epub" ]] && [[ -z "$debug_pipeline" ]]; then
   echo "simulated conversion failure" >&2
+  exit 1
+fi
+
+if [[ -n "$debug_pipeline" ]]; then
+  mkdir -p "$debug_pipeline"
+  printf 'debug pipeline for %s\n' "$input" > "$debug_pipeline/pipeline.txt"
+  echo "simulated conversion failure with debug" >&2
   exit 1
 fi
 
@@ -514,5 +539,40 @@ mkdir -p "$MULTI_DEFAULT"
 
 [[ -f "$MULTI_DEFAULT/azw3/Book One.azw3" ]]
 [[ -f "$MULTI_DEFAULT/epub/Book One.epub" ]]
+
+DEBUG_DIR="$TMPDIR/debug-failed"
+DEBUG_OUT="$TMPDIR/debug-out"
+mkdir -p "$DEBUG_DIR" "$DEBUG_OUT"
+
+PATH="$FAKEBIN_FAIL:$PATH" "$SCRIPT" \
+  --src "$QUARANTINE_SRC" \
+  --out "$DEBUG_OUT" \
+  --debug-failed "$DEBUG_DIR" \
+  --dry-run > "$TMPDIR/debug-dry.log"
+
+grep -Eq 'Debug-failed:' "$TMPDIR/debug-dry.log"
+grep -Eq 'DEBUG-FAIL \[azw3\]: would write to .*/Book One\.epub on failure' "$TMPDIR/debug-dry.log"
+
+set +e
+PATH="$FAKEBIN_FAIL:$PATH" "$SCRIPT" \
+  --src "$QUARANTINE_SRC" \
+  --out "$DEBUG_OUT" \
+  --debug-failed "$DEBUG_DIR" > "$TMPDIR/debug-run.log"
+debug_status=$?
+set -e
+
+if [[ "$debug_status" -ne 2 ]]; then
+  echo "FAIL: expected exit code 2 when debug-failed conversion fails, got $debug_status"
+  exit 1
+fi
+
+[[ -f "$DEBUG_DIR/Book One.epub/pipeline.txt" ]]
+grep -Eq 'debug pipeline for .*/Book One\.epub' "$DEBUG_DIR/Book One.epub/pipeline.txt"
+grep -Eq 'DEBUG-FAIL \[azw3\]: exported to' "$TMPDIR/debug-run.log"
+
+if "$SCRIPT" --src "$SRC" --preflight --debug-failed "$DEBUG_DIR" 2>/dev/null; then
+  echo "FAIL: preflight + debug-failed should fail"
+  exit 1
+fi
 
 echo "OK: bulk-epub-to-azw3 selftest passed"
