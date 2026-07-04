@@ -4,7 +4,7 @@ CONFIGFILE ?= $(CONFIGDIR)/config.env
 PREFIX ?= $(HOME)/.local
 BINDIR ?= $(PREFIX)/bin
 
-TOOLS := bin/hdd_cleanup bin/security-health bin/who-uses bin/printer-doctor bin/garbage-collector bin/bulk-epub-to-azw3
+TOOLS := bin/hdd_cleanup bin/security-health bin/who-uses bin/printer-doctor bin/garbage-collector bin/bulk-epub-to-azw3 bin/bulk-ebook-convert
 
 .PHONY: init-config install uninstall check print-prefix install-system uninstall-system
 

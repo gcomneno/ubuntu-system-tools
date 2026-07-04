@@ -186,20 +186,24 @@ Non-goals:
 
 ### `bulk-epub-to-azw3`
 
-Bulk-convert EPUB files to AZW3 for Kindle using Calibre's `ebook-convert`.
+Bulk-convert ebook files for Kindle and other targets using Calibre's `ebook-convert`.
 
-By default, the source directory is the current working directory and the output directory is `./azw3`.
+By default, the source format is EPUB, the target format is AZW3, the source directory is the current working directory, and the output directory is `./azw3`.
+
+The same converter is also available as `bulk-ebook-convert`, which accepts explicit `--from` and `--to` format options.
 
 Dry-run from a directory containing EPUB files:
 
 ```bash
 bin/bulk-epub-to-azw3 --dry-run
+bin/bulk-ebook-convert --from epub --to azw3 --dry-run
 ```
 
 Run the real conversion:
 
 ```bash
 bin/bulk-epub-to-azw3
+bin/bulk-ebook-convert --from mobi --to epub --src ./mobi
 ```
 
 Use explicit source and output directories:
@@ -207,9 +211,12 @@ Use explicit source and output directories:
 ```bash
 bin/bulk-epub-to-azw3 --src ./epub --out ./kindle --dry-run
 bin/bulk-epub-to-azw3 --src ./epub --out ./kindle
+bin/bulk-ebook-convert --from docx --to epub --src ./manuscripts --out ./epub
 ```
 
-The tool validates EPUB files before conversion, preserves subdirectories, skips existing AZW3 files by default, and supports `--force` to overwrite existing output files.
+When `--out` is omitted, the output directory defaults to `./<to>` (for example `./epub` or `./azw3`).
+
+The tool validates EPUB files before conversion, preserves subdirectories, skips existing output files by default, and supports `--force` to overwrite existing output files.
 
 Preflight EPUB metadata without converting:
 

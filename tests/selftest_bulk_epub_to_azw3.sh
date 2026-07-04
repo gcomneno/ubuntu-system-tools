@@ -361,4 +361,43 @@ PATH="$FAKEBIN:$PATH" "$SCRIPT" \
 [[ -f "$QUARANTINE_COPY_DIR/invalid/broken.epub/source.epub" ]]
 [[ ! -L "$QUARANTINE_COPY_DIR/invalid/broken.epub/source.epub" ]]
 
+MOBI_SRC="$TMPDIR/mobi-src"
+MOBI_OUT="$TMPDIR/mobi-out"
+mkdir -p "$MOBI_SRC/nested" "$MOBI_OUT"
+
+printf 'fake mobi\n' > "$MOBI_SRC/Story.mobi"
+printf 'fake mobi\n' > "$MOBI_SRC/nested/Other.mobi"
+
+PATH="$FAKEBIN:$PATH" "$SCRIPT" \
+  --from mobi \
+  --to epub \
+  --src "$MOBI_SRC" \
+  --out "$MOBI_OUT" \
+  --dry-run > "$TMPDIR/mobi-dry.log"
+
+grep -Eq 'FROM: mobi' "$TMPDIR/mobi-dry.log"
+grep -Eq 'TO: epub' "$TMPDIR/mobi-dry.log"
+grep -Eq 'DRY: ebook-convert .*/Story\.mobi.*/Story\.epub' "$TMPDIR/mobi-dry.log"
+
+PATH="$FAKEBIN:$PATH" "$SCRIPT" \
+  --from mobi \
+  --to epub \
+  --src "$MOBI_SRC" \
+  --out "$MOBI_OUT" > "$TMPDIR/mobi-run.log"
+
+[[ -f "$MOBI_OUT/Story.epub" ]]
+[[ -f "$MOBI_OUT/nested/Other.epub" ]]
+grep -Eq 'Source found:[[:space:]]+2' "$TMPDIR/mobi-run.log"
+grep -Eq 'Converted:[[:space:]]+2' "$TMPDIR/mobi-run.log"
+
+WRAPPER="$ROOT/bin/bulk-ebook-convert"
+[[ -x "$WRAPPER" ]]
+PATH="$FAKEBIN:$PATH" "$WRAPPER" --from mobi --to epub --src "$MOBI_SRC" --out "$TMPDIR/mobi-wrapper-out" --dry-run > "$TMPDIR/mobi-wrapper.log"
+grep -Eq 'FROM: mobi' "$TMPDIR/mobi-wrapper.log"
+
+if "$SCRIPT" --from mobi --preflight --src "$MOBI_SRC" 2>/dev/null; then
+  echo "FAIL: preflight with --from mobi should fail"
+  exit 1
+fi
+
 echo "OK: bulk-epub-to-azw3 selftest passed"
