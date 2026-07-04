@@ -618,4 +618,45 @@ if "$SCRIPT" --src "$SRC" --preflight --cover-policy prefer-metadata 2>/dev/null
   exit 1
 fi
 
+PATH="$FAKEBIN:$PATH" "$SCRIPT" \
+  --src "$SRC" \
+  --out "$OUT_DRY" \
+  --cleanup conservative \
+  --dry-run > "$TMPDIR/cleanup-conservative.log"
+
+grep -Eq 'Cleanup: conservative \(--enable-heuristics\)' "$TMPDIR/cleanup-conservative.log"
+grep -F -- '--enable-heuristics' "$TMPDIR/cleanup-conservative.log"
+grep -Fq 'DRY [azw3]:' "$TMPDIR/cleanup-conservative.log"
+
+PATH="$FAKEBIN:$PATH" "$SCRIPT" \
+  --src "$SRC" \
+  --out "$OUT_DRY" \
+  --cleanup off \
+  --dry-run > "$TMPDIR/cleanup-off.log"
+
+if grep -Eq 'Cleanup:' "$TMPDIR/cleanup-off.log"; then
+  echo "FAIL: off cleanup should not emit cleanup banner"
+  exit 1
+fi
+
+if "$SCRIPT" --src "$SRC" --cleanup bad-mode --dry-run 2>/dev/null; then
+  echo "FAIL: unknown cleanup mode should fail"
+  exit 1
+fi
+
+if "$SCRIPT" --src "$SRC" --preflight --cleanup conservative 2>/dev/null; then
+  echo "FAIL: preflight + cleanup should fail"
+  exit 1
+fi
+
+PATH="$FAKEBIN:$PATH" "$SCRIPT" \
+  --src "$SRC" \
+  --out "$OUT_DRY" \
+  --cover-policy prefer-metadata \
+  --cleanup conservative \
+  --dry-run > "$TMPDIR/cleanup-cover-combined.log"
+
+grep -F -- '--prefer-metadata-cover' "$TMPDIR/cleanup-cover-combined.log"
+grep -F -- '--enable-heuristics' "$TMPDIR/cleanup-cover-combined.log"
+
 echo "OK: bulk-epub-to-azw3 selftest passed"
