@@ -4,6 +4,9 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+### Changed
+- Document Calibre (`ebook-convert`) as an explicit, host-installed dependency for real ebook conversion.
+
 ## v0.2.0
 
 ### Added

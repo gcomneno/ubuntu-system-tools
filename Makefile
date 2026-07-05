@@ -32,6 +32,7 @@ install:
 	install -m 0755 $(TOOLS) "$(DESTDIR)$(BINDIR)/"
 	@echo "OK: installed to $(DESTDIR)$(BINDIR)"
 	@echo "Hint: run 'command -v who-uses && who-uses --help'"
+	@echo "Hint: bulk-ebook-convert needs Calibre (ebook-convert) for real conversions — sudo apt install calibre"
 
 uninstall:
 	@for t in $(notdir $(TOOLS)); do \
