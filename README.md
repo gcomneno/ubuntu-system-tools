@@ -188,6 +188,14 @@ Non-goals:
 
 Bulk-convert ebook files for Kindle and other targets using Calibre's `ebook-convert`.
 
+**Calibre is required for real conversion.** This tool is a safety-first wrapper around Calibre; it does not ship or install Calibre. Install it on the host before running a real conversion (not needed for `--dry-run` or `--preflight`):
+
+```bash
+sudo apt update
+sudo apt install -y calibre
+ebook-convert --version
+```
+
 By default, the source format is EPUB, the target format is AZW3, the source directory is the current working directory, and the output directory is `./azw3`.
 
 The same converter is also available as `bulk-ebook-convert`, which accepts explicit `--from` and `--to` format options.
@@ -314,11 +322,20 @@ The CSS file must exist before conversion starts. Paths with spaces are quoted i
 
 Combine advanced options as needed (`--profile`, `--cover-policy`, `--cleanup`, `--extra-css`, `--manifest`, `--quarantine`, `--debug-failed`). Dry-run shows the resolved Calibre flags for each file.
 
-Dependencies:
+**Dependencies for `bulk-epub-to-azw3` / `bulk-ebook-convert`:**
+
+| Dependency | When required | Install / verify |
+| --- | --- | --- |
+| **Calibre (`ebook-convert`)** | Real conversion only | `sudo apt install -y calibre` then `ebook-convert --version` |
+| `unzip`, `grep` | EPUB preflight and EPUB validation | `sudo apt install -y unzip` |
+| `python3`, `sha256sum`, `date` | `--manifest` | Usually preinstalled on Ubuntu |
+
+Calibre is **not** required for `--dry-run` (planning output) or `--preflight` (metadata audit). The repository intentionally does not install system packages for you; see [What this repository does NOT do](#what-this-repository-does-not-do).
 
 ```bash
 sudo apt update
-sudo apt install calibre unzip
+sudo apt install -y calibre unzip
+ebook-convert --version
 ```
 
 
@@ -327,6 +344,8 @@ sudo apt install calibre unzip
 -   Bash
 -   ripgrep (`rg`)
 -   python3
+-   **Calibre (`ebook-convert`)** — required for real ebook conversion with `bulk-epub-to-azw3` / `bulk-ebook-convert` (not bundled; install separately)
+-   `unzip` — required for EPUB preflight/validation in the ebook converter
 -   systemd (optional)
 -   CUPS (only for `printer-doctor`)
 

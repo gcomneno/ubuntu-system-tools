@@ -15,6 +15,10 @@ Description:
 
   Defaults are EPUB to AZW3, matching the historical bulk-epub-to-azw3 behavior.
 
+  Real conversion requires Calibre (ebook-convert). Install separately; this
+  repository does not bundle or install Calibre for you. Dry-run and EPUB
+  preflight work without Calibre.
+
 Defaults:
   --src      current working directory
   --from     epub
@@ -76,6 +80,21 @@ Conversion profiles:
   kindle-paperwhite  --output-profile kindle_pw3
   kindle-scribe      --output-profile kindle_scribe
   kindle-legacy      --output-profile kindle --mobi-file-type both
+
+Dependencies:
+  Required for real conversion (not dry-run):
+    Calibre — provides ebook-convert
+      Ubuntu/Debian: sudo apt install calibre
+      Verify: ebook-convert --version
+
+  Required for EPUB preflight and EPUB source validation:
+    unzip, grep
+
+  Required for --manifest:
+    python3, sha256sum, date
+
+  Optional:
+    Calibre is not needed for --dry-run planning output.
 EOF
 }
 
@@ -86,6 +105,29 @@ die() {
 
 need_cmd() {
   command -v "$1" >/dev/null 2>&1 || die "missing command: $1"
+}
+
+need_ebook_convert() {
+  if command -v ebook-convert >/dev/null 2>&1; then
+    return 0
+  fi
+
+  cat >&2 <<'EOF'
+ERROR: missing command: ebook-convert
+
+Real ebook conversion requires Calibre. This wrapper delegates conversion to
+Calibre's ebook-convert; it is not bundled with ubuntu-system-tools.
+
+Install on Ubuntu/Debian:
+  sudo apt update
+  sudo apt install -y calibre
+
+Verify:
+  ebook-convert --version
+
+Dry-run and EPUB preflight do not require Calibre.
+EOF
+  exit 1
 }
 
 is_valid_epub() {
@@ -895,7 +937,7 @@ if [[ "$MANIFEST_ENABLED" -eq 1 ]]; then
 fi
 
 if [[ "$PREFLIGHT" -eq 0 && "$DRY_RUN" -eq 0 ]]; then
-  need_cmd ebook-convert
+  need_ebook_convert
 fi
 
 [[ "$PREFLIGHT" -eq 0 || "$MANIFEST_ENABLED" -eq 0 ]] || die "--manifest cannot be used with --preflight"
