@@ -9,6 +9,14 @@ Requirements (typical Ubuntu):
 - `ripgrep` (`rg`)
 - `python3` (used by `who-uses --json`)
 
+Optional for manual real-world testing of the ebook converter:
+- **Calibre** (`ebook-convert`) — required on the host for real conversions; CI selftests use a fake `ebook-convert` and do not need Calibre installed
+
+```bash
+sudo apt install -y calibre   # only if you want to run real ebook conversions locally
+ebook-convert --version
+```
+
 Run checks locally:
 
 ```bash
