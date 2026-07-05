@@ -287,6 +287,33 @@ bin/bulk-epub-to-azw3 --src ./epub --out ./kindle --cover-policy remove-first-im
 
 Policies: `keep` (default), `prefer-metadata` (`--prefer-metadata-cover`), `remove-first-image` (`--remove-first-image`).
 
+Choose a Kindle conversion profile for device-specific Calibre tuning:
+
+```bash
+bin/bulk-epub-to-azw3 --src ./epub --out ./kindle --profile kindle-paperwhite --dry-run
+bin/bulk-epub-to-azw3 --src ./epub --out ./kindle --profile kindle-scribe
+```
+
+Profiles: `generic` (default, no extra flags), `kindle` (`--output-profile kindle`), `kindle-paperwhite` (`kindle_pw3`), `kindle-scribe` (`kindle_scribe`), `kindle-legacy` (`kindle` + `--mobi-file-type both`). `--profile` controls Calibre output tuning; `--target kindle` selects the azw3 export format.
+
+Enable conservative typography cleanup for messy EPUB HTML:
+
+```bash
+bin/bulk-epub-to-azw3 --src ./epub --out ./kindle --cleanup conservative --dry-run
+```
+
+Modes: `off` (default), `conservative` (`--enable-heuristics`). Opt-in only because heuristics can alter book structure.
+
+Inject custom CSS for repeatable Kindle typography tweaks:
+
+```bash
+bin/bulk-epub-to-azw3 --src ./epub --out ./kindle --extra-css ./kindle.css --dry-run
+```
+
+The CSS file must exist before conversion starts. Paths with spaces are quoted in dry-run output.
+
+Combine advanced options as needed (`--profile`, `--cover-policy`, `--cleanup`, `--extra-css`, `--manifest`, `--quarantine`, `--debug-failed`). Dry-run shows the resolved Calibre flags for each file.
+
 Dependencies:
 
 ```bash
