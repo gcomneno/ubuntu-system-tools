@@ -4,9 +4,25 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+## v0.2.0
+
 ### Added
-- Add `bulk-epub-to-azw3` for bulk EPUB to AZW3 conversion using Calibre.
-- Add selftest coverage for `bulk-epub-to-azw3`, including dry-run, invalid EPUB detection, nested output paths, and skip-existing behavior.
+- Add `bulk-epub-to-azw3` and `bulk-ebook-convert` for bulk ebook conversion via Calibre.
+- Add `--from` / `--to` format selection with allowlists and source-quality warnings for PDF/DJVU.
+- Add curated `--target` presets: kindle, kobo, archive, text.
+- Add multi-target export with `--to azw3,epub,...`.
+- Add `--preflight` EPUB metadata audit.
+- Add `--manifest` JSONL conversion manifest with checksums and tool versions.
+- Add `--quarantine` / `--quarantine-copy` for invalid and failed sources.
+- Add `--debug-failed` Calibre debug-pipeline export on conversion failure.
+- Add `--cover-policy` (keep, prefer-metadata, remove-first-image).
+- Add `--cleanup` typography preset (off, conservative).
+- Add `--extra-css` custom CSS injection with path validation.
+- Add `--profile` Kindle conversion profiles (generic, kindle, kindle-paperwhite, kindle-scribe, kindle-legacy).
+- Add selftest coverage for all converter options using fake `ebook-convert`.
+
+### Changed
+- Expand README documentation for the full ebook conversion workflow.
 
 ## v0.1.3
 
