@@ -2,7 +2,7 @@
 
 set -Eeuo pipefail
 
-PROGRAM_NAME="$(basename "$0")"
+PROGRAM_NAME="${BULK_EBOOK_PROGRAM_NAME:-$(basename "$0")}"
 
 usage() {
   cat <<EOF
