@@ -37,17 +37,44 @@ explicit user request.
 
 ## Install
 
-``` bash
+Clone the repository:
+
+```bash
 git clone https://github.com/gcomneno/ubuntu-system-tools
 cd ubuntu-system-tools
+```
+
+The recommended development installation creates symbolic links in
+`~/.local/bin`, keeping the repository as the canonical source:
+
+```bash
 make install PREFIX=$HOME/.local
 ```
 
-Uninstall:
+Moving or deleting the cloned repository will break those links.
 
-``` bash
+For autonomous executable copies instead:
+
+```bash
+make install-copy PREFIX=$HOME/.local
+```
+
+System-wide installation always uses copies rather than links into a
+user checkout:
+
+```bash
+make install-system
+```
+
+Uninstall a user-local installation:
+
+```bash
 make uninstall PREFIX=$HOME/.local
 ```
+
+The installer refuses to replace or remove unrelated files. `FORCE=1`
+is available only for an explicitly verified copy installation or
+uninstallation.
 
 ------------------------------------------------------------------------
 
@@ -370,7 +397,7 @@ Whenever practical, tools expose self-contained documentation via
 
 -   No automatic installs
 -   No destructive actions by default
--   No service management
+-   No broad or unattended service orchestration
 -   No hidden privilege escalation
 -   No unsafe system modifications
 

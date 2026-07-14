@@ -2,4 +2,9 @@
 
 set -Eeuo pipefail
 
-exec "$(dirname "$0")/bulk-epub-to-azw3" "$@"
+PROGRAM_NAME="$(basename "$0")"
+
+exec env \
+  BULK_EBOOK_PROGRAM_NAME="$PROGRAM_NAME" \
+  "$(dirname "$0")/bulk-epub-to-azw3" \
+  "$@"
