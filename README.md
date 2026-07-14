@@ -397,7 +397,7 @@ Whenever practical, tools expose self-contained documentation via
 
 -   No automatic installs
 -   No destructive actions by default
--   No service management
+-   No broad or unattended service orchestration
 -   No hidden privilege escalation
 -   No unsafe system modifications
 
