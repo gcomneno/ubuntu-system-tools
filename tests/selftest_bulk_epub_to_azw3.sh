@@ -416,6 +416,21 @@ grep -Eq 'Source found:[[:space:]]+2' "$TMPDIR/mobi-run.log"
 grep -Eq 'Converted:[[:space:]]+2' "$TMPDIR/mobi-run.log"
 
 WRAPPER="$ROOT/bin/bulk-ebook-convert"
+
+echo "== Test: wrapper preserves its CLI identity"
+
+wrapper_help="$("$WRAPPER" --help)"
+
+if ! grep -q '^  bulk-ebook-convert \[' <<<"$wrapper_help"; then
+  echo "FAIL: wrapper help does not identify bulk-ebook-convert" >&2
+  exit 1
+fi
+
+if grep -q '^  bulk-epub-to-azw3 \[' <<<"$wrapper_help"; then
+  echo "FAIL: wrapper help leaked the engine CLI name" >&2
+  exit 1
+fi
+
 [[ -x "$WRAPPER" ]]
 PATH="$FAKEBIN:$PATH" "$WRAPPER" --from mobi --to epub --src "$MOBI_SRC" --out "$TMPDIR/mobi-wrapper-out" --dry-run > "$TMPDIR/mobi-wrapper.log"
 grep -Eq 'FROM: mobi' "$TMPDIR/mobi-wrapper.log"
