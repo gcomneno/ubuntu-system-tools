@@ -1,0 +1,310 @@
+#!/usr/bin/env bash
+
+set -Eeuo pipefail
+
+readonly PROGRAM="safe-uninstall"
+readonly ROOT_PREFIX="${SAFE_UNINSTALL_ROOT_PREFIX:-}"
+
+usage() {
+  cat <<'EOF'
+Usage:
+  safe-uninstall --help
+  safe-uninstall inspect PACKAGE [--target-user USER]
+  safe-uninstall purge PACKAGE [--apply] [--target-user USER]
+
+Inspect and safely purge Ubuntu/Debian APT packages. Inspection and purge
+without --apply are read-only. Applying a purge requires root; this command
+never invokes sudo. Generic discoveries are reported for manual review only.
+
+Options:
+  --apply             Execute the printed purge plan.
+  --target-user USER  Select the user whose profile paths are in scope.
+  -h, --help          Show this help.
+EOF
+}
+
+die() { printf 'ERROR: %s\n' "$*" >&2; exit 2; }
+note() { printf '%s\n' "$*"; }
+
+root_path() {
+  local path="$1"
+  [[ "$path" == /* ]] || die "internal path is not absolute: $path"
+  printf '%s%s\n' "$ROOT_PREFIX" "$path"
+}
+
+effective_uid() {
+  printf '%s\n' "$EUID"
+}
+
+default_target_user() {
+  local uid="$1" entry user
+  if [[ "$uid" == 0 ]]; then
+    printf '%s\n' root
+    return
+  fi
+  entry="$(/usr/bin/getent passwd "$uid" 2>/dev/null || true)"
+  user="${entry%%:*}"
+  valid_user "$user" || die "cannot resolve current user for uid: $uid"
+  printf '%s\n' "$user"
+}
+
+select_target_user() {
+  local explicit="$1" uid="$2" sudo_user="$3" selected
+  if [[ -n "$explicit" ]]; then
+    selected="$explicit"
+  elif [[ "$uid" == 0 && -n "$sudo_user" && "$sudo_user" != root ]]; then
+    selected="$sudo_user"
+  else
+    selected="$(default_target_user "$uid")"
+  fi
+  valid_user "$selected" || die "invalid target user: $selected"
+  printf '%s\n' "$selected"
+}
+
+valid_package() {
+  [[ "$1" =~ ^[a-z0-9][a-z0-9+.-]*(:[a-z0-9][a-z0-9-]*)?$ ]]
+}
+
+valid_user() {
+  [[ "$1" =~ ^[a-z_][a-z0-9_-]*[$]?$ ]]
+}
+
+profile_for() {
+  [[ "$1" == "anydesk" ]] && printf 'anydesk\n' || printf 'none\n'
+}
+
+profile_service() { printf '%s\n' 'anydesk.service'; }
+profile_process() { printf '%s\n' 'anydesk'; }
+profile_commands() { printf '%s\n' 'anydesk' 'anydesk-global-settings'; }
+profile_system_paths() {
+  printf '%s\n' \
+    '/etc/anydesk' \
+    '/etc/systemd/system/anydesk.service' \
+    '/etc/systemd/system/multi-user.target.wants/anydesk.service' \
+    '/etc/xdg/autostart/anydesk_global_tray.desktop' \
+    '/var/lib/gdm3/.anydesk' \
+    '/var/log/anydesk.trace'
+}
+profile_user_paths() {
+  printf '%s\n' '.anydesk' '.config/anydesk' '.cache/anydesk' '.local/share/anydesk'
+}
+
+resolve_home() {
+  local user="$1" entry home
+  if [[ -n "$ROOT_PREFIX" ]]; then
+    entry="$(getent passwd "$user" 2>/dev/null || true)"
+    home="$(printf '%s' "$entry" | awk -F: 'NF >= 6 { print $6; exit }')"
+  else
+    home="$(/usr/bin/getent passwd "$user" 2>/dev/null | awk -F: 'NF >= 6 { print $6; exit }' || true)"
+  fi
+  [[ -n "$home" && "$home" == /* ]] || die "cannot resolve home directory for target user: $user"
+  printf '%s\n' "$home"
+}
+
+validate_removal_path() {
+  local path="$1" home="${2:-}"
+  [[ -n "$path" && "$path" == /* ]] || die "refusing dangerous removal path: ${path:-<empty>}"
+  case "$path" in
+    /|/bin|/boot|/dev|/etc|/home|/lib|/lib64|/opt|/proc|/root|/run|/sbin|/srv|/sys|/tmp|/usr|/var)
+      die "refusing dangerous removal path: $path" ;;
+  esac
+  [[ -z "$home" || "$path" != "$home" ]] || die "refusing target user's home root: $path"
+}
+
+validate_user_removal_path() {
+  local path="$1" home="$2" relative parent component actual
+  validate_removal_path "$path" "$home"
+  [[ "$path" == "$home/"* ]] || die "refusing path outside target user's home: $path"
+  relative="${path#"$home/"}"
+  [[ -n "$relative" && "$relative" != */../* && "$relative" != ../* && "$relative" != */.. ]] ||
+    die "refusing unsafe target-user path: $path"
+
+  actual="$(root_path "$home")"
+  [[ -d "$actual" && ! -L "$actual" ]] || die "refusing unsafe target-user home: $home"
+  parent="${relative%/*}"
+  [[ "$parent" != "$relative" ]] || parent=""
+  actual="$(root_path "$home")"
+  while [[ -n "$parent" ]]; do
+    component="${parent%%/*}"
+    [[ -n "$component" && "$component" != . && "$component" != .. ]] || die "refusing unsafe target-user path: $path"
+    actual="$actual/$component"
+    [[ ! -L "$actual" ]] || die "refusing symlinked parent in target-user path: $path"
+    parent="${parent#*/}"
+    [[ "$parent" != "$component" ]] || parent=""
+  done
+}
+
+package_status() {
+  local package="$1" status
+  status="$(dpkg-query -W -f='${db:Status-Abbrev} ${Version}\n' -- "$package" 2>/dev/null || true)"
+  if [[ -n "$status" ]]; then note "Package: $package ($status)"; else note "Package: $package (not installed)"; fi
+}
+
+owned_files() {
+  local package="$1"
+  note 'Package-owned files:'
+  dpkg -L -- "$package" 2>/dev/null | LC_ALL=C sort || note '  (unavailable)'
+}
+
+inspect_details() {
+  local package="$1" profile="$2" path unit unit_state process_name process_report found=0
+  package_status "$package"
+  owned_files "$package"
+
+  note 'Package-owned executables:'
+  while IFS= read -r path; do
+    [[ -n "$path" && -f "$(root_path "$path")" && -x "$(root_path "$path")" ]] || continue
+    note "$path"; found=1
+  done < <(dpkg -L -- "$package" 2>/dev/null | LC_ALL=C sort -u || true)
+  (( found )) || note '  (none found)'
+
+  note 'Package-owned systemd units:'
+  found=0
+  while IFS= read -r path; do
+    case "$path" in *.service|*.socket|*.timer|*.target)
+      unit="${path##*/}"
+      unit_state="$(systemctl is-active "$unit" 2>/dev/null || true)"
+      [[ -n "$unit_state" ]] || unit_state='unknown'
+      note "$path: $unit_state"
+      found=1
+    esac
+  done < <(dpkg -L -- "$package" 2>/dev/null | LC_ALL=C sort -u || true)
+  (( found )) || note '  (none found)'
+
+  note 'Likely running processes (report only):'
+  process_report="$({
+    while IFS= read -r process_name; do
+      pgrep -a -x -- "$process_name" 2>/dev/null || true
+    done < <(
+      while IFS= read -r path; do
+        [[ -n "$path" && -f "$(root_path "$path")" && -x "$(root_path "$path")" ]] || continue
+        printf '%s\n' "${path##*/}"
+      done < <(dpkg -L -- "$package" 2>/dev/null || true) | LC_ALL=C sort -u
+    )
+  } | LC_ALL=C sort -u)"
+  if [[ -n "$process_report" ]]; then note "$process_report"; else note '  (none found)'; fi
+  report_candidates "$package"
+  note "Trusted profile: $profile"
+}
+
+report_candidates() {
+  local package="$1" root actual found=0
+  note 'APT source/key candidates (manual review only):'
+  for root in /etc/apt/sources.list /etc/apt/sources.list.d /etc/apt/keyrings /usr/share/keyrings; do
+    actual="$(root_path "$root")"
+    [[ -e "$actual" ]] || continue
+    grep -rilF -- "$package" "$actual" 2>/dev/null | sed "s#^${ROOT_PREFIX}##" | LC_ALL=C sort || true
+  done
+  note 'Filesystem candidates (manual review only; roots: /etc /opt /usr/local /var/lib /var/log):'
+  for root in /etc /opt /usr/local /var/lib /var/log; do
+    actual="$(root_path "$root")"
+    [[ -d "$actual" ]] || continue
+    while IFS= read -r candidate; do note "${candidate#"$ROOT_PREFIX"}"; found=1; done \
+      < <(find "$actual" -xdev -iname "*$package*" -print 2>/dev/null | LC_ALL=C sort)
+  done
+  (( found )) || note '  (none found)'
+}
+
+print_plan() {
+  local package="$1" profile="$2" target_user="$3" home="$4" path
+  note "Removal plan for package: $package"
+  note '  - purge package with: apt-get -y purge -- PACKAGE'
+  note '  - verify package absence'
+  note '  - report heuristic candidates; never delete them'
+  note '  - do not run apt autoremove (review it separately if desired)'
+  if [[ "$profile" == anydesk ]]; then
+    note 'Trusted profile actions:'
+    note '  - stop and disable service: anydesk.service'
+    note '  - terminate exact process name: anydesk'
+    while IFS= read -r path; do note "  - remove exact path: $path"; done < <(profile_system_paths)
+    while IFS= read -r path; do note "  - remove exact path: $home/$path"; done < <(profile_user_paths)
+    note '  - reload systemd and reset failed service state'
+    note '  - verify declared commands, service, and paths are absent'
+    note "Target user: $target_user ($home)"
+  fi
+}
+
+remove_literal() {
+  local logical="$1" home="${2:-}" actual
+  if [[ -n "$home" ]]; then validate_user_removal_path "$logical" "$home"; else validate_removal_path "$logical"; fi
+  actual="$(root_path "$logical")"
+  if [[ -d "$actual" && ! -L "$actual" ]]; then rm -rf -- "$actual"; else rm -f -- "$actual"; fi
+}
+
+apply_purge() {
+  local package="$1" profile="$2" home="$3" path service failures=0
+  if [[ "$profile" == anydesk ]]; then
+    while IFS= read -r path; do validate_user_removal_path "$home/$path" "$home"; done < <(profile_user_paths)
+    service="$(profile_service)"
+    systemctl stop "$service" 2>/dev/null || true
+    systemctl disable "$service" 2>/dev/null || true
+    pkill -x -- "$(profile_process)" 2>/dev/null || true
+  fi
+
+  DEBIAN_FRONTEND=noninteractive apt-get -y purge -- "$package" || { note 'ERROR: package purge failed.' >&2; return 1; }
+
+  if [[ "$profile" == anydesk ]]; then
+    while IFS= read -r path; do remove_literal "$path"; done < <(profile_system_paths)
+    while IFS= read -r path; do remove_literal "$home/$path" "$home"; done < <(profile_user_paths)
+    systemctl daemon-reload
+    systemctl reset-failed "$(profile_service)" 2>/dev/null || true
+  fi
+
+  if dpkg-query -W -f='${db:Status-Abbrev}\n' -- "$package" 2>/dev/null | grep -q '^ii'; then
+    note "VERIFY FAIL: package remains installed: $package" >&2; failures=1
+  fi
+  if [[ "$profile" == anydesk ]]; then
+    while IFS= read -r path; do
+      if command -v -- "$path" >/dev/null 2>&1; then note "VERIFY FAIL: command remains: $path" >&2; failures=1; fi
+    done < <(profile_commands)
+    if systemctl is-active --quiet "$(profile_service)" 2>/dev/null; then
+      note 'VERIFY FAIL: service remains active: anydesk.service' >&2; failures=1
+    fi
+    while IFS= read -r path; do
+      [[ ! -e "$(root_path "$path")" && ! -L "$(root_path "$path")" ]] || { note "VERIFY FAIL: path remains: $path" >&2; failures=1; }
+    done < <(profile_system_paths)
+    while IFS= read -r path; do
+      [[ ! -e "$(root_path "$home/$path")" && ! -L "$(root_path "$home/$path")" ]] || { note "VERIFY FAIL: path remains: $home/$path" >&2; failures=1; }
+    done < <(profile_user_paths)
+  fi
+  report_candidates "$package"
+  (( failures == 0 )) || return 1
+  note 'Purge and verification completed successfully.'
+}
+
+main() {
+  local action="${1:-}" package="" apply=0 target_user="" profile home=""
+  [[ "$action" == -h || "$action" == --help ]] && { usage; exit 0; }
+  [[ "$action" == inspect || "$action" == purge ]] || { usage >&2; exit 2; }
+  shift
+  [[ $# -gt 0 ]] || die 'PACKAGE is required'
+  package="$1"; shift
+  valid_package "$package" || die "invalid package name: $package"
+  while (( $# )); do
+    case "$1" in
+      --apply) [[ "$action" == purge ]] || die '--apply is valid only with purge'; apply=1 ;;
+      --target-user) shift; [[ $# -gt 0 ]] || die '--target-user requires USER'; target_user="$1"; valid_user "$target_user" || die "invalid target user: $target_user" ;;
+      *) die "unknown option: $1" ;;
+    esac
+    shift
+  done
+
+  profile="$(profile_for "$package")"
+  target_user="$(select_target_user "$target_user" "$EUID" "${SUDO_USER:-}")"
+  if [[ "$profile" == anydesk ]]; then home="$(resolve_home "$target_user")"; fi
+
+  if [[ "$action" == inspect ]]; then
+    note "Inspection for package: $package"
+    inspect_details "$package" "$profile"
+    exit 0
+  fi
+
+  print_plan "$package" "$profile" "$target_user" "$home"
+  if (( ! apply )); then note 'DRY RUN: no changes made. Re-run with --apply to execute this plan.'; exit 0; fi
+  [[ "$(effective_uid)" == 0 ]] || die "--apply requires root privileges. Re-run with: sudo $PROGRAM purge $package --apply"
+  apply_purge "$package" "$profile" "$home"
+}
+
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
+fi
