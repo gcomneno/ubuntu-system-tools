@@ -122,6 +122,12 @@ Recover a disabled CUPS queue:
 printer-doctor repair
 ```
 
+Preview a controlled package removal without changing the system:
+
+``` bash
+safe-uninstall purge anydesk
+```
+
 ------------------------------------------------------------------------
 
 ## Configuration
@@ -144,6 +150,35 @@ set +a
 ------------------------------------------------------------------------
 
 ## Included tools
+
+### `safe-uninstall`
+
+Inspect and remove Ubuntu/Debian APT/dpkg packages with a complete, read-only
+plan before any mutation. Version 1 does not manage Snap, Flatpak, AppImage,
+Docker, language package managers, or manually installed software.
+
+-   `inspect` and `purge` are read-only unless `--apply` is explicitly supplied
+-   applied purges require root; the tool never invokes `sudo` internally
+-   generic discoveries are candidate-only and are never deleted or terminated
+-   exact residual cleanup and process/service handling require a trusted profile
+-   AnyDesk is the single trusted application profile in version 1
+-   `apt autoremove` is never run automatically
+
+Inspect AnyDesk and preview its full removal plan:
+
+``` bash
+safe-uninstall inspect anydesk
+safe-uninstall purge anydesk
+```
+
+Apply that reviewed plan, using `SUDO_USER` as the target configuration owner:
+
+``` bash
+sudo safe-uninstall purge anydesk --apply
+```
+
+Root can select another configuration owner explicitly with
+`--target-user USER`.
 
 ### `hdd_cleanup`
 
