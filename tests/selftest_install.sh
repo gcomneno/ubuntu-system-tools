@@ -35,7 +35,8 @@ for src in "$repo_root"/bin/*; do
       printer-doctor \
       garbage-collector \
       bulk-epub-to-azw3 \
-      bulk-ebook-convert
+      bulk-ebook-convert \
+      safe-uninstall
   ) " in
     *" $name "*)
       assert_symlink_to "$prefix/bin/$name" "$src"
@@ -83,7 +84,8 @@ for name in \
   printer-doctor \
   garbage-collector \
   bulk-epub-to-azw3 \
-  bulk-ebook-convert
+  bulk-ebook-convert \
+  safe-uninstall
 do
   dest="$copy_prefix/bin/$name"
   src="$repo_root/bin/$name"
