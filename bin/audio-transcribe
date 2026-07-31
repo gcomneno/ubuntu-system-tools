@@ -1,0 +1,330 @@
+#!/usr/bin/env bash
+: <<'AUDIO_TRANSCRIBE_MD'
+# audio-transcribe
+
+`audio-transcribe` performs local speech-to-text transcription through
+`faster-whisper`.
+
+## Safety and privacy
+
+- Audio is processed locally.
+- Network access is disabled by default through `local_files_only=True`.
+- Model downloads require the explicit `--allow-download` option.
+- No automatic dependency installation is performed.
+- The tool never invokes `sudo`.
+- Transcription is printed to standard output unless `--output FILE` is used.
+
+## Usage
+
+    audio-transcribe [OPTIONS] FILE
+
+## Main options
+
+- `--model MODEL`: Whisper model name or local model path. Default: `small`.
+- `--language CODE`: language code such as `it`, `en`, or `auto`.
+- `--output FILE`: write the transcription to a file instead of standard output.
+- `--allow-download`: permit `faster-whisper` to download a missing model.
+- `--force`: allow replacement of an existing output file.
+- `--doctor`: report the selected Python runtime and dependency availability.
+- `--help-md`: print this embedded Markdown documentation.
+
+## Python runtime selection
+
+The first available runtime is selected:
+
+1. `AUDIO_TRANSCRIBE_PYTHON`;
+2. the dedicated virtual environment under
+   `${XDG_DATA_HOME:-$HOME/.local/share}/ubuntu-system-tools/audio-transcribe/.venv`;
+3. `python3` from `PATH`.
+
+A dedicated environment can be prepared manually with:
+
+    python3 -m venv \
+      "$HOME/.local/share/ubuntu-system-tools/audio-transcribe/.venv"
+
+    "$HOME/.local/share/ubuntu-system-tools/audio-transcribe/.venv/bin/python" \
+      -m pip install faster-whisper
+
+The repository tool reports missing dependencies but does not install them.
+
+## Exit codes
+
+- `0`: success;
+- `2`: invalid invocation, missing dependency, missing local model, or
+  transcription failure.
+
+## Output sensitivity
+
+The transcription may contain personal or confidential information from the
+source audio. Review it before sharing or publishing it.
+AUDIO_TRANSCRIBE_MD
+
+set -Eeuo pipefail
+
+PROGRAM_NAME="$(basename -- "$0")"
+
+die() {
+  printf 'ERROR: %s\n' "$*" >&2
+  exit 2
+}
+
+usage() {
+  cat <<'USAGE'
+NAME
+  audio-transcribe - local speech-to-text transcription with faster-whisper
+
+SYNOPSIS
+  audio-transcribe [OPTIONS] FILE
+  audio-transcribe --doctor
+
+OPTIONS
+  --model MODEL       Model name or local model path. Default: small
+  --language CODE     Language code such as it, en, or auto. Default: auto
+  --output FILE       Write transcription to FILE instead of standard output
+  --allow-download    Explicitly permit downloading a missing model
+  --force             Replace an existing output file
+  --doctor            Report Python and faster-whisper availability
+  --help-md           Print embedded Markdown documentation
+  -h, --help          Show this help
+
+ENVIRONMENT
+  AUDIO_TRANSCRIBE_PYTHON
+                      Explicit Python interpreter containing faster-whisper
+
+DEFAULT SAFETY
+  Network model downloads are disabled unless --allow-download is supplied.
+  Dependencies are never installed automatically.
+
+EXIT CODES
+  0  Success
+  2  Usage or operational error
+USAGE
+}
+
+print_help_md() {
+  sed -n \
+    "/^: <<'AUDIO_TRANSCRIBE_MD'$/,/^AUDIO_TRANSCRIBE_MD$/p" \
+    "$0" |
+    sed '1d;$d'
+}
+
+select_python() {
+  local configured="${AUDIO_TRANSCRIBE_PYTHON:-}"
+  local data_home="${XDG_DATA_HOME:-$HOME/.local/share}"
+  local dedicated="$data_home/ubuntu-system-tools/audio-transcribe/.venv/bin/python"
+
+  if [[ -n "$configured" ]]; then
+    [[ -x "$configured" ]] \
+      || die "configured Python is not executable: $configured"
+
+    printf '%s\n' "$configured"
+    return
+  fi
+
+  if [[ -x "$dedicated" ]]; then
+    printf '%s\n' "$dedicated"
+    return
+  fi
+
+  command -v python3 >/dev/null 2>&1 \
+    || die "Python 3 is not available"
+
+  command -v python3
+}
+
+run_doctor() {
+  local python_bin
+  python_bin="$(select_python)"
+
+  printf 'Python: %s\n' "$python_bin"
+
+  if "$python_bin" -c 'import faster_whisper' >/dev/null 2>&1; then
+    printf 'faster-whisper: available\n'
+    return 0
+  fi
+
+  printf 'faster-whisper: unavailable\n'
+  printf '\n'
+  printf '%s\n' 'Create the dedicated environment manually:'
+  printf '  python3 -m venv "%s"\n' \
+    "${XDG_DATA_HOME:-$HOME/.local/share}/ubuntu-system-tools/audio-transcribe/.venv"
+  printf '  "%s" -m pip install faster-whisper\n' \
+    "${XDG_DATA_HOME:-$HOME/.local/share}/ubuntu-system-tools/audio-transcribe/.venv/bin/python"
+
+  return 2
+}
+
+MODEL="small"
+LANGUAGE="auto"
+OUTPUT_FILE=""
+ALLOW_DOWNLOAD=0
+FORCE=0
+DOCTOR=0
+AUDIO_FILE=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -h|--help)
+      usage
+      exit 0
+      ;;
+
+    --help-md)
+      print_help_md
+      exit 0
+      ;;
+
+    --doctor)
+      DOCTOR=1
+      shift
+      ;;
+
+    --model)
+      [[ $# -ge 2 ]] || die "missing value for --model"
+      MODEL="$2"
+      shift 2
+      ;;
+
+    --language)
+      [[ $# -ge 2 ]] || die "missing value for --language"
+      LANGUAGE="$2"
+      shift 2
+      ;;
+
+    --output)
+      [[ $# -ge 2 ]] || die "missing value for --output"
+      OUTPUT_FILE="$2"
+      shift 2
+      ;;
+
+    --allow-download)
+      ALLOW_DOWNLOAD=1
+      shift
+      ;;
+
+    --force)
+      FORCE=1
+      shift
+      ;;
+
+    --)
+      shift
+
+      while [[ $# -gt 0 ]]; do
+        [[ -z "$AUDIO_FILE" ]] \
+          || die "multiple audio files are not supported"
+
+        AUDIO_FILE="$1"
+        shift
+      done
+      ;;
+
+    -*)
+      die "unknown option: $1"
+      ;;
+
+    *)
+      [[ -z "$AUDIO_FILE" ]] \
+        || die "multiple audio files are not supported"
+
+      AUDIO_FILE="$1"
+      shift
+      ;;
+  esac
+done
+
+if [[ "$DOCTOR" -eq 1 ]]; then
+  [[ -z "$AUDIO_FILE" ]] \
+    || die "--doctor cannot be combined with an audio file"
+
+  [[ -z "$OUTPUT_FILE" ]] \
+    || die "--doctor cannot be combined with --output"
+
+  run_doctor
+  exit $?
+fi
+
+[[ -n "$AUDIO_FILE" ]] || die "missing audio file"
+[[ -f "$AUDIO_FILE" ]] || die "audio file not found: $AUDIO_FILE"
+[[ -r "$AUDIO_FILE" ]] || die "audio file is not readable: $AUDIO_FILE"
+[[ -n "$MODEL" ]] || die "model cannot be empty"
+[[ -n "$LANGUAGE" ]] || die "language cannot be empty"
+
+if [[ -n "$OUTPUT_FILE" ]]; then
+  output_parent="$(dirname -- "$OUTPUT_FILE")"
+
+  [[ -d "$output_parent" ]] \
+    || die "output directory not found: $output_parent"
+
+  if [[ -e "$OUTPUT_FILE" && "$FORCE" -ne 1 ]]; then
+    die "output file already exists; use --force: $OUTPUT_FILE"
+  fi
+fi
+
+PYTHON_BIN="$(select_python)"
+
+if ! "$PYTHON_BIN" -c 'import faster_whisper' >/dev/null 2>&1; then
+  die "faster-whisper is not available for Python: $PYTHON_BIN; run $PROGRAM_NAME --doctor"
+fi
+
+"$PYTHON_BIN" - \
+  "$AUDIO_FILE" \
+  "$MODEL" \
+  "$LANGUAGE" \
+  "$ALLOW_DOWNLOAD" \
+  "$OUTPUT_FILE" <<'PY'
+import sys
+from pathlib import Path
+
+audio_path, model, language_value, allow_download_value, output_value = sys.argv[1:]
+
+language = None if language_value == "auto" else language_value
+allow_download = allow_download_value == "1"
+
+try:
+    from faster_whisper import WhisperModel
+
+    whisper_model = WhisperModel(
+        model,
+        device="cpu",
+        compute_type="int8",
+        local_files_only=not allow_download,
+    )
+
+    segments, _info = whisper_model.transcribe(
+        audio_path,
+        language=language,
+        task="transcribe",
+    )
+
+    text = " ".join(
+        segment.text.strip()
+        for segment in segments
+        if getattr(segment, "text", None)
+        and segment.text.strip()
+    ).strip()
+
+except Exception as exc:
+    message = str(exc).strip() or exc.__class__.__name__
+
+    if not allow_download:
+        message += (
+            "; the model must already be available locally "
+            "or --allow-download must be supplied explicitly"
+        )
+
+    print(f"ERROR: transcription failed: {message}", file=sys.stderr)
+    raise SystemExit(2)
+
+if output_value:
+    try:
+        Path(output_value).write_text(text + "\n", encoding="utf-8")
+    except OSError as exc:
+        print(
+            f"ERROR: cannot write output file: {exc}",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+else:
+    print(text)
+PY
