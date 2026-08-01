@@ -39,6 +39,20 @@ assert_contains() {
   }
 }
 
+assert_not_contains() {
+  local path="$1"
+  local unexpected="$2"
+  local message="$3"
+
+  if grep -Fq -- "$unexpected" "$path"; then
+    printf 'UNEXPECTED TEXT: %s\n' "$unexpected" >&2
+    printf '%s\n' '----- file content -----' >&2
+    cat -- "$path" >&2
+    printf '%s\n' '------------------------' >&2
+    fail "$message"
+  fi
+}
+
 run_expect_status() {
   local expected_status="$1"
   shift
@@ -116,6 +130,10 @@ def _record(event, payload):
 
 class WhisperModel:
     def __init__(self, model_size_or_path, **kwargs):
+        init_error = os.environ.get("FAKE_WHISPER_INIT_ERROR")
+        if init_error:
+            raise RuntimeError(init_error)
+
         _record(
             "init",
             {
@@ -125,6 +143,10 @@ class WhisperModel:
         )
 
     def transcribe(self, audio, **kwargs):
+        transcribe_error = os.environ.get("FAKE_WHISPER_TRANSCRIBE_ERROR")
+        if transcribe_error:
+            raise RuntimeError(transcribe_error)
+
         _record(
             "transcribe",
             {
@@ -239,6 +261,174 @@ init, transcribe = events
 assert init["kwargs"]["local_files_only"] is False, init
 assert transcribe["kwargs"]["language"] is None, transcribe
 PY
+
+printf '%s\n' 'TEST: existing output is preserved without --force'
+
+protected_output="$tmp/protected.txt"
+printf 'keep this text\n' >"$protected_output"
+
+run_expect_status 2 \
+  env \
+  AUDIO_TRANSCRIBE_PYTHON="$python_bin" \
+  PYTHONPATH="$fake_root" \
+  FAKE_WHISPER_LOG="$tmp/protected.jsonl" \
+  "$tool" \
+  --output "$protected_output" \
+  "$audio" \
+  >"$tmp/protected.out" \
+  2>"$tmp/protected.err"
+
+assert_eq \
+  'keep this text' \
+  "$(cat "$protected_output")" \
+  'existing output was modified without --force'
+
+assert_contains "$tmp/protected.err" \
+  'output file already exists; use --force' \
+  'overwrite protection diagnostic differs'
+
+printf '%s\n' 'TEST: --force replaces an existing output file'
+
+env \
+  AUDIO_TRANSCRIBE_PYTHON="$python_bin" \
+  PYTHONPATH="$fake_root" \
+  FAKE_WHISPER_LOG="$tmp/force.jsonl" \
+  "$tool" \
+  --force \
+  --output "$protected_output" \
+  "$audio" \
+  >"$tmp/force.out" \
+  2>"$tmp/force.err"
+
+assert_eq \
+  'Sì tutto bene' \
+  "$(cat "$protected_output")" \
+  '--force did not replace the existing output'
+
+[[ ! -s "$tmp/force.out" ]] \
+  || fail "forced file-output mode unexpectedly wrote to stdout"
+
+[[ ! -s "$tmp/force.err" ]] \
+  || fail "forced file-output mode unexpectedly wrote to stderr"
+
+printf '%s\n' 'TEST: input and output cannot identify the same file'
+
+same_file="$tmp/same-file.ogg"
+printf 'original audio bytes\n' >"$same_file"
+
+run_expect_status 2 \
+  env \
+  AUDIO_TRANSCRIBE_PYTHON="$python_bin" \
+  PYTHONPATH="$fake_root" \
+  FAKE_WHISPER_LOG="$tmp/same-file.jsonl" \
+  "$tool" \
+  --force \
+  --output "$same_file" \
+  "$same_file" \
+  >"$tmp/same-file.out" \
+  2>"$tmp/same-file.err"
+
+assert_eq \
+  'original audio bytes' \
+  "$(cat "$same_file")" \
+  'same-file protection did not preserve the audio input'
+
+assert_contains "$tmp/same-file.err" \
+  'output file must differ from audio file' \
+  'same-file diagnostic differs'
+
+printf '%s\n' 'TEST: missing dependency fails before transcription'
+
+missing_python="$tmp/python-without-faster-whisper"
+cat > "$missing_python" <<'SH'
+#!/usr/bin/env bash
+
+if [[ "${1:-}" == "-c" ]]; then
+  exit 1
+fi
+
+exec python3 "$@"
+SH
+chmod +x "$missing_python"
+
+run_expect_status 2 \
+  env \
+  AUDIO_TRANSCRIBE_PYTHON="$missing_python" \
+  "$tool" \
+  "$audio" \
+  >"$tmp/missing-dependency.out" \
+  2>"$tmp/missing-dependency.err"
+
+assert_contains "$tmp/missing-dependency.err" \
+  'faster-whisper is not available for Python' \
+  'missing dependency diagnostic differs'
+
+printf '%s\n' 'TEST: model initialization failure has a conditional cache hint'
+
+run_expect_status 2 \
+  env \
+  AUDIO_TRANSCRIBE_PYTHON="$python_bin" \
+  PYTHONPATH="$fake_root" \
+  FAKE_WHISPER_LOG="$tmp/init-failure.jsonl" \
+  FAKE_WHISPER_INIT_ERROR='model cache unavailable' \
+  "$tool" \
+  "$audio" \
+  >"$tmp/init-failure.out" \
+  2>"$tmp/init-failure.err"
+
+assert_contains "$tmp/init-failure.err" \
+  'ERROR: model initialization failed: model cache unavailable' \
+  'model initialization diagnostic differs'
+
+assert_contains "$tmp/init-failure.err" \
+  'if the selected model is not cached locally, retry with --allow-download' \
+  'model cache hint is missing'
+
+assert_not_contains "$tmp/init-failure.err" \
+  'ERROR: transcription failed' \
+  'model initialization failure was mislabeled as transcription failure'
+
+printf '%s\n' 'TEST: transcription failure does not suggest a model download'
+
+run_expect_status 2 \
+  env \
+  AUDIO_TRANSCRIBE_PYTHON="$python_bin" \
+  PYTHONPATH="$fake_root" \
+  FAKE_WHISPER_LOG="$tmp/transcribe-failure.jsonl" \
+  FAKE_WHISPER_TRANSCRIBE_ERROR='decoder exploded' \
+  "$tool" \
+  "$audio" \
+  >"$tmp/transcribe-failure.out" \
+  2>"$tmp/transcribe-failure.err"
+
+assert_contains "$tmp/transcribe-failure.err" \
+  'ERROR: transcription failed: decoder exploded' \
+  'transcription failure diagnostic differs'
+
+assert_not_contains "$tmp/transcribe-failure.err" \
+  '--allow-download' \
+  'transcription failure incorrectly suggested a model download'
+
+printf '%s\n' 'TEST: output write failures are reported'
+
+output_directory="$tmp/output-directory"
+mkdir "$output_directory"
+
+run_expect_status 2 \
+  env \
+  AUDIO_TRANSCRIBE_PYTHON="$python_bin" \
+  PYTHONPATH="$fake_root" \
+  FAKE_WHISPER_LOG="$tmp/write-failure.jsonl" \
+  "$tool" \
+  --force \
+  --output "$output_directory" \
+  "$audio" \
+  >"$tmp/write-failure.out" \
+  2>"$tmp/write-failure.err"
+
+assert_contains "$tmp/write-failure.err" \
+  'ERROR: cannot write output file' \
+  'output write failure diagnostic differs'
 
 printf '%s\n' 'TEST: doctor reports the selected runtime'
 
