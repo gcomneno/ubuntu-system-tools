@@ -86,6 +86,16 @@ Inspect recent security-related events:
 security-health --since "24 hours ago"
 ```
 
+Transcribe a local audio message:
+
+``` bash
+audio-transcribe --doctor
+audio-transcribe --language it --allow-download message.ogg
+```
+
+By default, model downloads are disabled. Once the selected model is available
+locally, subsequent transcriptions do not require `--allow-download`.
+
 Find where a dependency or identifier is used:
 
 ``` bash
@@ -243,6 +253,50 @@ Non-goals:
 -   nozzle checks
 -   vendor-specific maintenance
 -   proprietary driver management
+
+------------------------------------------------------------------------
+
+### `audio-transcribe`
+
+Locally transcribe audio and voice messages through `faster-whisper`.
+
+-   Audio processing is local
+-   Model downloads are disabled by default
+-   `--allow-download` is required to retrieve a missing model
+-   Dependencies are never installed automatically
+-   Output is written to standard output unless `--output FILE` is supplied
+-   `--doctor` reports the selected Python runtime and dependency availability
+
+Check the runtime:
+
+``` bash
+audio-transcribe --doctor
+```
+
+Transcribe an Italian voice message using an already cached model:
+
+``` bash
+audio-transcribe --language it message.ogg
+```
+
+Explicitly permit the first model download:
+
+``` bash
+audio-transcribe --model small --language it --allow-download message.ogg
+```
+
+Write the transcription to a file:
+
+``` bash
+audio-transcribe --language it --output message.txt message.ogg
+```
+
+A dedicated environment can be prepared manually under
+`~/.local/share/ubuntu-system-tools/audio-transcribe/.venv`. See
+`audio-transcribe --help-md` for the exact commands.
+
+The transcription may contain sensitive personal information. Review it before
+sharing or publishing it.
 
 ------------------------------------------------------------------------
 
@@ -408,6 +462,7 @@ ebook-convert --version
 -   python3
 -   **Calibre (`ebook-convert`)** — required for real ebook conversion with `bulk-epub-to-azw3` / `bulk-ebook-convert` (not bundled; install separately)
 -   `unzip` — required for EPUB preflight/validation in the ebook converter
+-   `faster-whisper` — required only for `audio-transcribe`; install it manually in a dedicated Python virtual environment
 -   systemd (optional)
 -   CUPS (only for `printer-doctor`)
 
