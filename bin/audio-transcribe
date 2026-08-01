@@ -256,6 +256,19 @@ if [[ -n "$OUTPUT_FILE" ]]; then
   [[ -d "$output_parent" ]] \
     || die "output directory not found: $output_parent"
 
+  audio_real="$(readlink -f -- "$AUDIO_FILE")" \
+    || die "cannot resolve audio file path: $AUDIO_FILE"
+  output_real="$(readlink -m -- "$OUTPUT_FILE")" \
+    || die "cannot resolve output file path: $OUTPUT_FILE"
+
+  if [[ "$audio_real" == "$output_real" ]]; then
+    die "output file must differ from audio file: $OUTPUT_FILE"
+  fi
+
+  if [[ -e "$OUTPUT_FILE" && "$AUDIO_FILE" -ef "$OUTPUT_FILE" ]]; then
+    die "output file must differ from audio file: $OUTPUT_FILE"
+  fi
+
   if [[ -e "$OUTPUT_FILE" && "$FORCE" -ne 1 ]]; then
     die "output file already exists; use --force: $OUTPUT_FILE"
   fi
@@ -290,7 +303,19 @@ try:
         compute_type="int8",
         local_files_only=not allow_download,
     )
+except Exception as exc:
+    message = str(exc).strip() or exc.__class__.__name__
 
+    if not allow_download:
+        message += (
+            "; if the selected model is not cached locally, "
+            "retry with --allow-download"
+        )
+
+    print(f"ERROR: model initialization failed: {message}", file=sys.stderr)
+    raise SystemExit(2)
+
+try:
     segments, _info = whisper_model.transcribe(
         audio_path,
         language=language,
@@ -303,16 +328,8 @@ try:
         if getattr(segment, "text", None)
         and segment.text.strip()
     ).strip()
-
 except Exception as exc:
     message = str(exc).strip() or exc.__class__.__name__
-
-    if not allow_download:
-        message += (
-            "; the model must already be available locally "
-            "or --allow-download must be supplied explicitly"
-        )
-
     print(f"ERROR: transcription failed: {message}", file=sys.stderr)
     raise SystemExit(2)
 
