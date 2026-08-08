@@ -1,5 +1,7 @@
 # ubuntu-system-tools
 
+**English** | [Italiano](README.it.md)
+
 A small collection of **paranoid, safety-first system utilities**
 for Ubuntu and Linux.
 
@@ -453,6 +455,22 @@ sudo apt update
 sudo apt install -y calibre unzip
 ebook-convert --version
 ```
+
+
+### `pdf2epub`
+
+Convert a text-based PDF into EPUB using the safer two-step pipeline already formalized in `docs/pdf2epub.md`.
+
+- extracts text with `pdftotext -layout`
+- cleans the flow and promotes obvious headings
+- delegates the final EPUB and table-of-contents generation to Calibre's `ebook-convert`
+
+```bash
+pdf2epub "Document.pdf"
+pdf2epub "Document.pdf" "Document-smart.epub"
+```
+
+See the English guide in `docs/pdf2epub.md` and the Italian guide in `docs/pdf2epub.it.md`.
 
 
 ## Requirements
