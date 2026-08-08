@@ -1,5 +1,7 @@
 # pdf2epub
 
+**English** | [Italiano](pdf2epub.it.md)
+
 `pdf2epub` converte un PDF testuale in EPUB usando una pipeline prudente:
 
 1. estrae il testo con `pdftotext -layout`;
