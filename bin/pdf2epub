@@ -1,0 +1,227 @@
+#!/usr/bin/env bash
+
+set -Eeuo pipefail
+
+PROGRAM_NAME="$(basename "$0")"
+
+usage() {
+  cat <<EOF
+Usage:
+  $PROGRAM_NAME INPUT.pdf [OUTPUT.epub]
+
+Description:
+  Convert a text-based PDF into an EPUB using a safer two-step pipeline:
+  PDF -> cleaned Markdown -> EPUB.
+
+  The tool extracts text with pdftotext -layout, preserves tabular blocks
+  when possible, promotes obvious section headings, and then lets Calibre's
+  ebook-convert generate the EPUB and its table of contents.
+
+Defaults:
+  INPUT.pdf      required
+  OUTPUT.epub    INPUT basename with .epub extension
+
+Dependencies:
+  - pdftotext
+  - ebook-convert (Calibre)
+  - pdfinfo
+  - python3
+
+Examples:
+  $PROGRAM_NAME "Migrazione Legacy.pdf"
+  $PROGRAM_NAME "Migrazione Legacy.pdf" "Migrazione Legacy-smart.epub"
+EOF
+}
+
+fail() {
+  echo "ERROR: $*" >&2
+  exit 1
+}
+
+need_cmd() {
+  command -v "$1" >/dev/null 2>&1 || fail "missing command: $1"
+}
+
+if [[ $# -lt 1 || $# -gt 2 ]]; then
+  usage >&2
+  exit 1
+fi
+
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+  usage
+  exit 0
+fi
+
+input_pdf="$1"
+[[ -f "$input_pdf" ]] || fail "file not found: $input_pdf"
+case "$input_pdf" in
+  *.pdf|*.PDF) ;;
+  *) fail "input must be a PDF file" ;;
+esac
+
+if [[ $# -eq 2 ]]; then
+  output_epub="$2"
+else
+  output_epub="${input_pdf%.*}.epub"
+fi
+
+need_cmd pdftotext
+need_cmd ebook-convert
+need_cmd pdfinfo
+need_cmd python3
+
+tmpdir="$(mktemp -d)"
+cleanup() {
+  rm -rf "$tmpdir"
+}
+trap cleanup EXIT INT TERM
+
+raw_txt="$tmpdir/raw.txt"
+clean_md="$tmpdir/clean.md"
+pdf_title="$(pdfinfo "$input_pdf" 2>/dev/null | awk -F: '/^Title:/ {sub(/^[ \t]+/, "", $2); print $2; exit}')"
+[[ -n "$pdf_title" ]] || pdf_title="$(basename "$input_pdf")"
+pdf_title="${pdf_title%.*}"
+
+pdftotext -layout "$input_pdf" "$raw_txt" || fail "PDF -> text extraction failed"
+
+PDF_TITLE="$pdf_title" python3 - "$raw_txt" "$clean_md" <<'PY'
+import os
+import re
+import sys
+import unicodedata
+from pathlib import Path
+
+src = Path(sys.argv[1])
+dst = Path(sys.argv[2])
+title = os.environ.get("PDF_TITLE", "").strip()
+
+lines = src.read_text(encoding="utf-8", errors="replace").splitlines()
+blocks = []
+current = []
+for line in lines:
+    s = line.rstrip()
+    if re.fullmatch(r"\s*\d+\s*", s):
+        continue
+    if not s.strip():
+        if current:
+            blocks.append(current)
+            current = []
+        continue
+    current.append(s)
+if current:
+    blocks.append(current)
+
+def norm(text: str) -> str:
+    return re.sub(r"\s+", " ", text).strip()
+
+def slugify(text: str) -> str:
+    text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode("ascii")
+    text = text.lower()
+    text = re.sub(r"[^a-z0-9]+", "-", text).strip("-")
+    return text or "section"
+
+KNOWN_HEADINGS = {
+    "Executive summary",
+    "Definizione, tipologie e ragioni della migrazione",
+    "Valutazione iniziale e checklist di assessment",
+    "Checklist di valutazione iniziale",
+    "Strategie e pattern di migrazione",
+    "Confronto tra pattern e strategie",
+    "Strumenti e piattaforme",
+    "Confronto strumenti e piattaforme",
+    "Roadmap, piano di progetto, rischio, test e governance",
+    "Assunzioni dichiarate",
+    "Timeline indicativa",
+    "Roadmap con milestone, deliverable e stima costi per fase",
+    "Team e ruoli",
+    "Gestione del rischio e rollback",
+    "Test e validazione",
+    "Governance, compliance e sicurezza",
+    "Change management e formazione",
+    "Metriche di successo e monitoraggio post-migrazione",
+    "Casi studio reali",
+    "Lezioni trasversali dai casi",
+    "Conclusioni operative",
+}
+
+def heading_candidate(text: str) -> bool:
+    t = norm(text)
+    if not t or len(t) > 100:
+        return False
+    if t in KNOWN_HEADINGS:
+        return True
+    if re.search(r"[.!?;:]$", t):
+        return False
+    if t.count(" ") > 14:
+        return False
+    if re.match(r"^\d+(\.\d+)*\s", t):
+        return False
+    letters = re.sub(r"[^A-Za-zÀ-ÿ]", "", t)
+    return len(letters) >= 4
+
+
+def table_like(block) -> bool:
+    if len(block) >= 3:
+        short = sum(len(norm(l)) < 50 for l in block)
+        dense = sum("  " in l for l in block)
+        if short >= len(block) - 1 or dense >= 2:
+            return True
+    joined = norm(" ".join(block))
+    return len(block) == 1 and ("  " in block[0] or "|" in block[0] or len(joined) < 20)
+
+sections = []
+out = []
+if title:
+    out.append(f"# {title}")
+    out.append("")
+
+seen = set()
+for idx, block in enumerate(blocks):
+    text = [norm(x) for x in block]
+    joined = norm(" ".join(text))
+    if not joined:
+        continue
+    if idx == 0 and title and joined == norm(title):
+        continue
+
+    if joined in KNOWN_HEADINGS and joined not in seen:
+        anchor = slugify(joined)
+        sections.append((joined, anchor))
+        out.append(f'<a id="{anchor}"></a>')
+        out.append(f"## {joined}")
+        out.append("")
+        seen.add(joined)
+        continue
+
+    if len(text) == 1 and heading_candidate(joined) and joined not in seen:
+        anchor = slugify(joined)
+        sections.append((joined, anchor))
+        level = "##" if len(joined) <= 45 else "###"
+        out.append(f'<a id="{anchor}"></a>')
+        out.append(f"{level} {joined}")
+        out.append("")
+        seen.add(joined)
+        continue
+
+    if table_like(block):
+        out.extend(block)
+        out.append("")
+        continue
+
+    out.append(joined)
+    out.append("")
+
+if sections:
+    toc = [f"# {title}" if title else "# Documento", "", "## Sommario", ""]
+    for text, anchor in sections:
+        toc.append(f"- [{text}](#{anchor})")
+    toc.append("")
+    out = toc + out
+
+dst.write_text("\n".join(out).rstrip() + "\n", encoding="utf-8")
+PY
+
+ebook-convert "$clean_md" "$output_epub" || fail "EPUB conversion failed"
+
+echo "Output salvato in   $output_epub"
+echo "Creato: $output_epub"
