@@ -160,6 +160,42 @@ def heading_candidate(text: str) -> bool:
     return len(letters) >= 4
 
 
+def split_structural_blocks(source_blocks):
+    result = []
+    normalized_title = norm(title)
+
+    for block in source_blocks:
+        current = []
+        for index, line in enumerate(block):
+            text = norm(line)
+            next_text = norm(block[index + 1]) if index + 1 < len(block) else ""
+            structural = bool(normalized_title and text == normalized_title) or text in KNOWN_HEADINGS
+            leading_heading = (
+                not current
+                and index + 1 < len(block)
+                and heading_candidate(text)
+                and "  " not in line
+                and bool(re.search(r"[.!?;:]$", next_text))
+            )
+
+            if structural or leading_heading:
+                if current:
+                    result.append(current)
+                    current = []
+                result.append([line])
+                continue
+
+            current.append(line)
+
+        if current:
+            result.append(current)
+
+    return result
+
+
+blocks = split_structural_blocks(blocks)
+
+
 def table_like(block) -> bool:
     if len(block) >= 3:
         short = sum(len(norm(l)) < 50 for l in block)
