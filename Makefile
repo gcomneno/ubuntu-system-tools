@@ -139,8 +139,8 @@ check:
 	tests/selftest_printer_doctor.sh
 	tests/selftest_garbage_collector.sh
 	tests/selftest_bulk_epub_to_azw3.sh
+	tests/selftest_kernel_health.sh
 	tests/selftest_pdf2epub.sh
 	tests/selftest_safe_uninstall.sh
 	tests/selftest_audio_transcribe.sh
-	tests/selftest_kernel_health.sh
 	tests/selftest_install.sh
