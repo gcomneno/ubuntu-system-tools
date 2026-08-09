@@ -7,7 +7,7 @@ PREFIX ?= $(HOME)/.local
 BINDIR ?= $(PREFIX)/bin
 FORCE ?= 0
 
-TOOLS := bin/hdd_cleanup bin/security-health bin/who-uses bin/printer-doctor bin/garbage-collector bin/bulk-epub-to-azw3 bin/bulk-ebook-convert bin/pdf2epub bin/safe-uninstall bin/audio-transcribe
+TOOLS := bin/hdd_cleanup bin/security-health bin/who-uses bin/printer-doctor bin/garbage-collector bin/bulk-epub-to-azw3 bin/bulk-ebook-convert bin/pdf2epub bin/safe-uninstall bin/audio-transcribe bin/kernel-health
 
 .PHONY: \
 	init-config \
@@ -142,4 +142,5 @@ check:
 	tests/selftest_pdf2epub.sh
 	tests/selftest_safe_uninstall.sh
 	tests/selftest_audio_transcribe.sh
+	tests/selftest_kernel_health.sh
 	tests/selftest_install.sh
