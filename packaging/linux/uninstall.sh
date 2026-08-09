@@ -119,11 +119,7 @@ for name in "${names[@]}"; do
   fi
 done
 
-rm -f -- "$MANIFEST" "$INSTALLED_VERSION"
-if [[ "$SCRIPT_DIR" != "$STATE_DIR" ]]; then
-  rm -f -- "$INSTALLED_UNINSTALLER"
-fi
-
+rm -f -- "$MANIFEST" "$INSTALLED_VERSION" "$INSTALLED_UNINSTALLER"
 rmdir -- "$STATE_DIR" 2>/dev/null || true
 rmdir -- "$PREFIX/share" 2>/dev/null || true
 
