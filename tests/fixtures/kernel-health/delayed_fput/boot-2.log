@@ -1,0 +1,5 @@
+2026-08-07T05:50:04+0200 host-c kernel: workqueue: delayed_fput hogged CPU for >10000us 4 times, consider switching to WQ_UNBOUND
+2026-08-07T06:03:10+0200 host-c kernel: workqueue: delayed_fput hogged CPU for >10000us 8 times, consider switching to WQ_UNBOUND
+2026-08-07T06:22:31+0200 host-c kernel: workqueue: delayed_fput hogged CPU for >10000us 16 times, consider switching to WQ_UNBOUND
+2026-08-07T07:04:52+0200 host-c kernel: workqueue: delayed_fput hogged CPU for >10000us 32 times, consider switching to WQ_UNBOUND
+2026-08-07T08:36:19+0200 host-c kernel: workqueue: delayed_fput hogged CPU for >10000us 64 times, consider switching to WQ_UNBOUND

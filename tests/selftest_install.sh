@@ -37,7 +37,8 @@ for src in "$repo_root"/bin/*; do
       bulk-epub-to-azw3 \
       bulk-ebook-convert \
       safe-uninstall \
-      audio-transcribe
+      audio-transcribe \
+      kernel-health
   ) " in
     *" $name "*)
       assert_symlink_to "$prefix/bin/$name" "$src"
@@ -87,7 +88,8 @@ for name in \
   bulk-epub-to-azw3 \
   bulk-ebook-convert \
   safe-uninstall \
-  audio-transcribe
+  audio-transcribe \
+  kernel-health
 do
   dest="$copy_prefix/bin/$name"
   src="$repo_root/bin/$name"

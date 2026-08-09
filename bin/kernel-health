@@ -1,0 +1,312 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+if ! command -v python3 >/dev/null 2>&1; then
+  printf '%s\n' 'kernel-health: error: python3 is required' >&2
+  exit 2
+fi
+
+exec python3 - "$@" <<'PYCORE'
+"""Read-only kernel warning dynamics across recent boots."""
+
+from __future__ import annotations
+
+import argparse
+import os
+import re
+import subprocess
+import sys
+from dataclasses import dataclass, field
+from typing import Dict, Iterable, List, Optional
+
+DEFAULT_BOOTS = 3
+DELAYED_FPUT_SIGNATURE = "known:workqueue-delayed_fput-hogged-cpu"
+DELAYED_FPUT_LABEL = "workqueue: delayed_fput hogged CPU"
+
+DELAYED_FPUT_RE = re.compile(
+    r"\bworkqueue:\s+delayed_fput\s+hogged CPU for\s+>\d+us\s+"
+    r"(?P<count>\d+)\s+times,\s+consider switching to WQ_UNBOUND\b"
+)
+KERNEL_PREFIX_RE = re.compile(r"(?:^|\s)kernel(?:\[\d+\])?:\s+")
+MONOTONIC_PREFIX_RE = re.compile(r"^\[\s*\d+(?:\.\d+)?\]\s*")
+WHITESPACE_RE = re.compile(r"\s+")
+
+
+class OperationalError(RuntimeError):
+    """Raised when the current boot cannot be inspected."""
+
+
+@dataclass
+class WarningSeries:
+    signature: str
+    label: str
+    kind: str
+    metrics: List[int] = field(default_factory=list)
+
+
+@dataclass
+class BootReport:
+    offset: int
+    available: bool
+    warnings: Dict[str, WarningSeries] = field(default_factory=dict)
+    diagnostic: bool = False
+
+
+@dataclass
+class Finding:
+    classification: str
+    signature: str
+    label: str
+    kind: str
+    boot_count: int
+    requested_boots: int
+    series_by_offset: Dict[int, List[int]]
+
+
+def positive_int(value: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("must be a positive integer") from exc
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    return parsed
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="kernel-health",
+        description=(
+            "Read-only kernel warning analysis across recent boots. "
+            "Findings describe recurrence and dynamics; no remediation is attempted."
+        ),
+    )
+    parser.add_argument(
+        "--boots",
+        type=positive_int,
+        default=DEFAULT_BOOTS,
+        metavar="N",
+        help=f"analyze the N most recent boots (default: {DEFAULT_BOOTS})",
+    )
+    return parser
+
+
+def extract_message(line: str) -> Optional[str]:
+    """Strip common journal metadata without normalizing warning semantics."""
+    text = line.strip()
+    if not text or text.startswith("-- "):
+        return None
+
+    match = KERNEL_PREFIX_RE.search(text)
+    if match:
+        text = text[match.end() :]
+
+    text = MONOTONIC_PREFIX_RE.sub("", text)
+    text = WHITESPACE_RE.sub(" ", text).strip()
+    return text or None
+
+
+def parse_warning(line: str) -> Optional[WarningSeries]:
+    message = extract_message(line)
+    if message is None:
+        return None
+
+    delayed = DELAYED_FPUT_RE.search(message)
+    if delayed:
+        return WarningSeries(
+            signature=DELAYED_FPUT_SIGNATURE,
+            label=DELAYED_FPUT_LABEL,
+            kind="delayed_fput",
+            metrics=[int(delayed.group("count"))],
+        )
+
+    return WarningSeries(
+        signature=f"generic:{message}",
+        label=message,
+        kind="generic",
+    )
+
+
+def parse_boot(text: str) -> Dict[str, WarningSeries]:
+    grouped: Dict[str, WarningSeries] = {}
+    for line in text.splitlines():
+        parsed = parse_warning(line)
+        if parsed is None:
+            continue
+
+        existing = grouped.get(parsed.signature)
+        if existing is None:
+            grouped[parsed.signature] = parsed
+            continue
+
+        existing.metrics.extend(parsed.metrics)
+    return grouped
+
+
+def acquire_boot(offset: int, journalctl: str) -> BootReport:
+    command = [
+        journalctl,
+        "-k",
+        "-p",
+        "warning",
+        f"--boot={offset}",
+        "--no-pager",
+        "-o",
+        "cat",
+    ]
+
+    try:
+        completed = subprocess.run(
+            command,
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+    except FileNotFoundError as exc:
+        raise OperationalError(f"journalctl command not found: {journalctl}") from exc
+    except OSError as exc:
+        raise OperationalError(f"cannot execute journalctl: {exc}") from exc
+
+    diagnostic = bool(completed.stderr.strip())
+
+    if completed.returncode != 0:
+        if offset == 0:
+            raise OperationalError(
+                "cannot read kernel journal for the current boot; "
+                "no privilege escalation was attempted"
+            )
+        return BootReport(offset=offset, available=False, diagnostic=False)
+
+    return BootReport(
+        offset=offset,
+        available=True,
+        warnings=parse_boot(completed.stdout),
+        diagnostic=diagnostic,
+    )
+
+
+def significantly_increasing(values: Iterable[int]) -> bool:
+    sequence = list(values)
+    if len(sequence) < 2:
+        return False
+    if not all(right > left for left, right in zip(sequence, sequence[1:])):
+        return False
+    return sequence[-1] >= sequence[0] * 2
+
+
+def classify(boots: List[BootReport], requested_boots: int) -> List[Finding]:
+    current = next((boot for boot in boots if boot.offset == 0), None)
+    if current is None or not current.available:
+        raise OperationalError("current boot is unavailable")
+
+    findings: List[Finding] = []
+    for signature, current_series in current.warnings.items():
+        present = [
+            boot
+            for boot in boots
+            if boot.available and signature in boot.warnings
+        ]
+        recurring = any(boot.offset < 0 for boot in present)
+
+        if recurring and current_series.kind == "delayed_fput" and significantly_increasing(
+            current_series.metrics
+        ):
+            classification = "INCREASING"
+        elif recurring:
+            classification = "RECURRING"
+        else:
+            classification = "NEW"
+
+        series_by_offset = {
+            boot.offset: list(boot.warnings[signature].metrics)
+            for boot in present
+            if boot.warnings[signature].metrics
+        }
+
+        findings.append(
+            Finding(
+                classification=classification,
+                signature=signature,
+                label=current_series.label,
+                kind=current_series.kind,
+                boot_count=len(present),
+                requested_boots=requested_boots,
+                series_by_offset=series_by_offset,
+            )
+        )
+
+    order = {"INCREASING": 0, "RECURRING": 1, "NEW": 2}
+    return sorted(findings, key=lambda item: (order[item.classification], item.label))
+
+
+def boot_label(offset: int) -> str:
+    if offset == 0:
+        return "current"
+    if offset == -1:
+        return "previous"
+    return f"previous-{abs(offset)}"
+
+
+def render(findings: List[Finding], boots: List[BootReport], requested_boots: int) -> str:
+    available_count = sum(1 for boot in boots if boot.available)
+    diagnostic_count = sum(1 for boot in boots if boot.diagnostic)
+
+    lines = [
+        "KERNEL HEALTH",
+        f"coverage: {available_count}/{requested_boots} boots available",
+    ]
+    if diagnostic_count:
+        lines.append(f"journal notes: {diagnostic_count} boot(s) reported diagnostics")
+
+    for classification in ("INCREASING", "RECURRING", "NEW"):
+        lines.extend(["", classification, ""])
+        section = [item for item in findings if item.classification == classification]
+        if not section:
+            lines.append("-")
+            continue
+
+        for index, finding in enumerate(section):
+            if index:
+                lines.append("")
+            lines.append(f"- {finding.label}")
+            lines.append(
+                f"  boots: {finding.boot_count}/{finding.requested_boots}"
+            )
+            for offset in sorted(finding.series_by_offset, reverse=True):
+                sequence = finding.series_by_offset[offset]
+                lines.append(
+                    f"  {boot_label(offset)}: " + " → ".join(str(value) for value in sequence)
+                )
+
+    return "\n".join(lines) + "\n"
+
+
+def run(boots_requested: int) -> str:
+    journalctl = os.environ.get("KERNEL_HEALTH_JOURNALCTL", "journalctl")
+    boot_reports = [
+        acquire_boot(-index, journalctl)
+        for index in range(boots_requested)
+    ]
+    findings = classify(boot_reports, boots_requested)
+    return render(findings, boot_reports, boots_requested)
+
+
+def main(argv: Optional[List[str]] = None) -> int:
+    args = build_parser().parse_args(argv)
+    try:
+        output = run(args.boots)
+    except OperationalError as exc:
+        print(f"kernel-health: error: {exc}", file=sys.stderr)
+        return 2
+
+    sys.stdout.write(output)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+PYCORE
