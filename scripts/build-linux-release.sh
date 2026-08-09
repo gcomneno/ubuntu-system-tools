@@ -64,6 +64,9 @@ for file in README.md README.it.md CHANGELOG.md LICENSE POLICY.md; do
   install -m 0644 -- "$ROOT/$file" "$STAGE/$file"
 done
 
+install -m 0644 -- "$ROOT/docs/linux-release-package.md" "$STAGE/INSTALL-LINUX.md"
+install -m 0644 -- "$ROOT/docs/linux-release-package.it.md" "$STAGE/INSTALL-LINUX.it.md"
+
 if [[ -d "$ROOT/docs" ]]; then
   while IFS= read -r -d '' file; do
     rel="${file#"$ROOT/docs/"}"
