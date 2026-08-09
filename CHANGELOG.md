@@ -4,8 +4,23 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+## v0.3.0 — 2026-08-09
+
+### Added
+- Add `safe-uninstall`, a safety-first APT/dpkg package inspection and controlled removal tool.
+- Add `audio-transcribe`, with local transcription and offline-by-default model access.
+- Add `pdf2epub`, a safer text-PDF to EPUB conversion pipeline using Poppler and Calibre.
+- Add `kernel-health`, a read-only multi-boot kernel warning analyzer with `NEW`, `RECURRING`, and `INCREASING` classification.
+- Add an official Linux-only release package: `ubuntu-system-tools-v0.3.0-linux.tar.gz` plus SHA-256 checksum.
+- Add a reproducible Linux package builder and safe package installer/uninstaller with full destination preflight.
+
 ### Changed
+- Make user-local development installation use safe canonical symlinks by default while preserving autonomous-copy installation.
 - Document Calibre (`ebook-convert`) as an explicit, host-installed dependency for real ebook conversion.
+- Expand bilingual documentation for `pdf2epub`, `kernel-health`, and the Linux release package.
+
+### Fixed
+- Preserve headings and table-of-contents generation when compact `pdftotext -layout` output does not separate structural lines with blank lines.
 
 ## v0.2.0
 
