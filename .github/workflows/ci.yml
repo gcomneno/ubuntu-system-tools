@@ -41,7 +41,11 @@ jobs:
       - name: Run ShellCheck
         run: |
           shellcheck --version
-          shellcheck -x bin/*
+          shellcheck -x \
+            bin/* \
+            packaging/linux/*.sh \
+            scripts/build-linux-release.sh \
+            tests/selftest_release_package.sh
 
   make-check:
     name: make check (ubuntu ${{ matrix.ubuntu }})
@@ -50,7 +54,7 @@ jobs:
       matrix:
         ubuntu: ["22.04", "24.04"]
     runs-on: ubuntu-${{ matrix.ubuntu }}
-    needs: [pre-commit, shellcheck]    
+    needs: [pre-commit, shellcheck]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
