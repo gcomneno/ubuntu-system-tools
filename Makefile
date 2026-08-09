@@ -6,6 +6,7 @@ REPO_ROOT := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 PREFIX ?= $(HOME)/.local
 BINDIR ?= $(PREFIX)/bin
 FORCE ?= 0
+DISTDIR ?= $(REPO_ROOT)/dist
 
 TOOLS := bin/hdd_cleanup bin/security-health bin/who-uses bin/printer-doctor bin/garbage-collector bin/bulk-epub-to-azw3 bin/bulk-ebook-convert bin/pdf2epub bin/safe-uninstall bin/audio-transcribe bin/kernel-health
 
@@ -15,6 +16,7 @@ TOOLS := bin/hdd_cleanup bin/security-health bin/who-uses bin/printer-doctor bin
 	install-links \
 	install-copy \
 	uninstall \
+	package-linux \
 	check \
 	print-prefix \
 	install-system \
@@ -128,6 +130,13 @@ uninstall:
 	done; \
 	exit "$$failed"
 
+package-linux:
+	@if [ -z "$(VERSION)" ]; then \
+	  echo "ERROR: VERSION is required, for example: make package-linux VERSION=v0.3.0"; \
+	  exit 1; \
+	fi
+	@bash scripts/build-linux-release.sh "$(VERSION)" "$(DISTDIR)"
+
 install-system:
 	@sudo $(MAKE) install-copy PREFIX=/usr/local
 
@@ -144,3 +153,4 @@ check:
 	tests/selftest_safe_uninstall.sh
 	tests/selftest_audio_transcribe.sh
 	tests/selftest_install.sh
+	bash tests/selftest_release_package.sh
