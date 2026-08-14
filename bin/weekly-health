@@ -1,0 +1,291 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+IFS=$'\n\t'
+
+PROGRAM_NAME="$(basename "$0")"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+
+usage() {
+  cat <<'USAGE'
+weekly-health: local read-only weekly security health orchestration
+
+Usage:
+  weekly-health
+
+The weekly run executes, in order:
+  1. security-health
+  2. kernel-health
+  3. security-clamav-scan --yes
+
+Resolution:
+  - prefer the directory containing the weekly-health executable when complete
+  - otherwise fall back to PATH only when all helpers resolve to one directory
+  - fail closed when helper resolution is ambiguous
+
+Exit codes:
+  0    all checks completed cleanly
+  1    at least one component reported findings and none failed operationally
+  2    at least one mandatory component failed operationally
+  130  interrupted by SIGINT
+  143  terminated by SIGTERM
+USAGE
+}
+
+fail() {
+  printf '%s: error: %s\n' "$PROGRAM_NAME" "$*" >&2
+  exit 2
+}
+
+# shellcheck disable=SC2317
+cleanup() {
+  if [[ -n "${CURRENT_PID:-}" ]] && kill -0 "$CURRENT_PID" 2>/dev/null; then
+    kill -TERM "$CURRENT_PID" 2>/dev/null || true
+    local i
+    for ((i = 0; i < 50; i++)); do
+      kill -0 "$CURRENT_PID" 2>/dev/null || break
+      sleep 0.1
+    done
+    if kill -0 "$CURRENT_PID" 2>/dev/null; then
+      kill -KILL "$CURRENT_PID" 2>/dev/null || true
+    fi
+  fi
+
+  if [[ -n "${CURRENT_PID:-}" ]]; then
+    wait "$CURRENT_PID" 2>/dev/null || true
+    CURRENT_PID=""
+  fi
+
+  if [[ -n "${WORKDIR:-}" && -n "${WORKDIR_PARENT:-}" && "$WORKDIR" == "$WORKDIR_PARENT"/weekly-health.* ]]; then
+    rm -rf -- "$WORKDIR"
+    WORKDIR=""
+  fi
+}
+
+# shellcheck disable=SC2317
+handle_signal() {
+  local signal_name="$1"
+  local exit_code="$2"
+
+  if [[ -n "${CURRENT_PID:-}" ]]; then
+    kill -s "$signal_name" "$CURRENT_PID" 2>/dev/null || true
+  fi
+  exit "$exit_code"
+}
+
+status_label() {
+  case "$1" in
+    0) printf 'clean' ;;
+    1) printf 'findings' ;;
+    2) printf 'operational error' ;;
+    3) printf 'cancelled before scan' ;;
+    130) printf 'interrupted by SIGINT' ;;
+    143) printf 'terminated by SIGTERM' ;;
+    *) printf 'unexpected status %s' "$1" ;;
+  esac
+}
+
+resolve_helpers_from_dir() {
+  local dir="$1"
+  local helper
+
+  for helper in security-health kernel-health security-clamav-scan; do
+    if [[ ! -x "$dir/$helper" || -d "$dir/$helper" ]]; then
+      return 1
+    fi
+  done
+
+  HELPER_DIR="$dir"
+  HELPER_PATHS[security-health]="$dir/security-health"
+  HELPER_PATHS[kernel-health]="$dir/kernel-health"
+  HELPER_PATHS[security-clamav-scan]="$dir/security-clamav-scan"
+  return 0
+}
+
+resolve_helpers_from_path() {
+  local helper candidate dir=""
+
+  for helper in security-health kernel-health security-clamav-scan; do
+    candidate="$(command -v -- "$helper" 2>/dev/null || true)"
+    [[ -n "$candidate" ]] || return 1
+    candidate="$(cd -- "$(dirname -- "$candidate")" && pwd -P)/$(basename -- "$candidate")"
+    if [[ -z "$dir" ]]; then
+      dir="$(dirname -- "$candidate")"
+    elif [[ "$dir" != "$(dirname -- "$candidate")" ]]; then
+      return 2
+    fi
+    HELPER_PATHS["$helper"]="$candidate"
+  done
+
+  HELPER_DIR="$dir"
+  return 0
+}
+
+run_component() {
+  local name="$1"
+  local display="$2"
+  shift 2
+
+  local outfile="$WORKDIR/${name}.log"
+  : > "$outfile"
+
+  CURRENT_PID=""
+  "$@" >"$outfile" 2>&1 &
+  CURRENT_PID=$!
+
+  while kill -0 "$CURRENT_PID" 2>/dev/null; do
+    sleep 0.1
+  done
+
+  set +e
+  wait "$CURRENT_PID"
+  local status=$?
+  set -e
+
+  CURRENT_PID=""
+  COMPONENT_STATUS["$name"]="$status"
+  COMPONENT_OUTPUT["$name"]="$outfile"
+  COMPONENT_DISPLAY["$name"]="$display"
+}
+
+render_component() {
+  local title="$1"
+  local name="$2"
+
+  printf '\n=== %s ===\n' "$title"
+  printf 'Command: %s\n' "${COMPONENT_DISPLAY[$name]}"
+  printf 'Status: %s (%s)\n' "${COMPONENT_STATUS[$name]}" "$(status_label "${COMPONENT_STATUS[$name]}")"
+  if [[ -s "${COMPONENT_OUTPUT[$name]}" ]]; then
+    printf '%s\n' '--- output ---'
+    cat -- "${COMPONENT_OUTPUT[$name]}"
+    printf '%s\n' '--- end output ---'
+  else
+    printf '%s\n' '(no output)'
+  fi
+}
+
+aggregate_status() {
+  local final=0
+  local name status
+
+  for name in security-health kernel-health security-clamav-scan; do
+    status="${COMPONENT_STATUS[$name]:-2}"
+    case "$status" in
+      130|143)
+        printf '%s\n' "$status"
+        return 0
+        ;;
+      2|3)
+        final=2
+        ;;
+      1)
+        [[ "$final" -eq 0 ]] && final=1
+        ;;
+      0)
+        :
+        ;;
+      *)
+        final=2
+        ;;
+    esac
+  done
+
+  printf '%s\n' "$final"
+}
+
+WORKDIR_PARENT="${TMPDIR:-/tmp}"
+[[ "$WORKDIR_PARENT" == /* ]] || fail "TMPDIR must be an absolute path: $WORKDIR_PARENT"
+[[ "$WORKDIR_PARENT" != "/" ]] || fail "TMPDIR must not be /"
+WORKDIR="$(mktemp -d "$WORKDIR_PARENT/weekly-health.XXXXXX")"
+trap 'handle_signal INT 130' INT
+trap 'handle_signal TERM 143' TERM
+trap 'cleanup' EXIT
+
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+  usage
+  exit 0
+fi
+
+if (($#)); then
+  fail "no positional arguments are supported"
+fi
+
+declare -A HELPER_PATHS=()
+declare -A COMPONENT_STATUS=()
+declare -A COMPONENT_OUTPUT=()
+declare -A COMPONENT_DISPLAY=()
+HELPER_DIR=""
+
+if resolve_helpers_from_dir "$SCRIPT_DIR"; then
+  :
+else
+  case $? in
+    1)
+      if resolve_helpers_from_path; then
+        :
+      else
+        case $? in
+          1) fail "missing mandatory helper(s)" ;;
+          2) fail "ambiguous helper resolution" ;;
+          *) fail "unable to resolve helper directory" ;;
+        esac
+      fi
+      ;;
+    2)
+      fail "ambiguous helper resolution"
+      ;;
+    *)
+      fail "unable to resolve helper directory"
+      ;;
+  esac
+fi
+
+printf '=== weekly-health ===\n'
+printf 'Helper directory: %s\n' "$HELPER_DIR"
+printf 'Execution order:\n'
+printf '  1. security-health\n'
+printf '  2. kernel-health\n'
+printf '  3. security-clamav-scan --yes\n'
+
+run_component security-health "${HELPER_PATHS[security-health]}" "${HELPER_PATHS[security-health]}"
+if [[ "${COMPONENT_STATUS[security-health]}" == 130 || "${COMPONENT_STATUS[security-health]}" == 143 ]]; then
+  render_component "security-health" security-health
+  printf '\n=== summary ===\n'
+  printf 'aggregate: %s (%s)\n' "${COMPONENT_STATUS[security-health]}" "$(status_label "${COMPONENT_STATUS[security-health]}")"
+  exit "${COMPONENT_STATUS[security-health]}"
+fi
+run_component kernel-health "${HELPER_PATHS[kernel-health]}" "${HELPER_PATHS[kernel-health]}"
+if [[ "${COMPONENT_STATUS[kernel-health]}" == 130 || "${COMPONENT_STATUS[kernel-health]}" == 143 ]]; then
+  render_component "security-health" security-health
+  render_component "kernel-health" kernel-health
+  printf '\n=== summary ===\n'
+  printf 'aggregate: %s (%s)\n' "${COMPONENT_STATUS[kernel-health]}" "$(status_label "${COMPONENT_STATUS[kernel-health]}")"
+  exit "${COMPONENT_STATUS[kernel-health]}"
+fi
+run_component security-clamav-scan "${HELPER_PATHS[security-clamav-scan]} --yes" "${HELPER_PATHS[security-clamav-scan]}" --yes
+if [[ "${COMPONENT_STATUS[security-clamav-scan]}" == 130 || "${COMPONENT_STATUS[security-clamav-scan]}" == 143 ]]; then
+  render_component "security-health" security-health
+  render_component "kernel-health" kernel-health
+  render_component "security-clamav-scan --yes" security-clamav-scan
+  printf '\n=== summary ===\n'
+  printf 'aggregate: %s (%s)\n' "${COMPONENT_STATUS[security-clamav-scan]}" "$(status_label "${COMPONENT_STATUS[security-clamav-scan]}")"
+  exit "${COMPONENT_STATUS[security-clamav-scan]}"
+fi
+
+render_component "security-health" security-health
+render_component "kernel-health" kernel-health
+render_component "security-clamav-scan --yes" security-clamav-scan
+
+AGGREGATE_STATUS="$(aggregate_status)"
+
+printf '\n=== summary ===\n'
+printf 'security-health: %s (%s)\n' "${COMPONENT_STATUS[security-health]}" "$(status_label "${COMPONENT_STATUS[security-health]}")"
+printf 'kernel-health: %s (%s)\n' "${COMPONENT_STATUS[kernel-health]}" "$(status_label "${COMPONENT_STATUS[kernel-health]}")"
+printf 'security-clamav-scan: %s (%s)\n' "${COMPONENT_STATUS[security-clamav-scan]}" "$(status_label "${COMPONENT_STATUS[security-clamav-scan]}")"
+printf 'aggregate: %s (%s)\n' "$AGGREGATE_STATUS" "$(status_label "$AGGREGATE_STATUS")"
+
+case "$AGGREGATE_STATUS" in
+  0|1|2) exit "$AGGREGATE_STATUS" ;;
+  130) exit 130 ;;
+  143) exit 143 ;;
+  *) fail "unexpected aggregate status: $AGGREGATE_STATUS" ;;
+esac
