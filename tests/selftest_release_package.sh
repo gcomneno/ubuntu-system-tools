@@ -50,6 +50,13 @@ PKG="$TMPDIR/extract/$PACKAGE"
 mapfile -t PACKAGE_TOOLS < <(find "$PKG/bin" -maxdepth 1 -type f -printf '%f\n' | LC_ALL=C sort)
 ((${#PACKAGE_TOOLS[@]} > 0))
 
+for expected in security-clamav-scan weekly-health; do
+  printf '%s\n' "${PACKAGE_TOOLS[@]}" | grep -qx -- "$expected" || {
+    echo "FAIL: packaged tool missing: $expected" >&2
+    exit 1
+  }
+done
+
 bash "$PKG/install.sh" --prefix "$PREFIX" >/dev/null
 
 MANIFEST="$PREFIX/share/ubuntu-system-tools/manifest-$VERSION.sha256"

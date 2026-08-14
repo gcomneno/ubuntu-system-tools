@@ -38,6 +38,8 @@ for src in "$repo_root"/bin/*; do
       bulk-ebook-convert \
       safe-uninstall \
       audio-transcribe \
+      security-clamav-scan \
+      weekly-health \
       kernel-health
   ) " in
     *" $name "*)
@@ -89,6 +91,8 @@ for name in \
   bulk-ebook-convert \
   safe-uninstall \
   audio-transcribe \
+  security-clamav-scan \
+  weekly-health \
   kernel-health
 do
   dest="$copy_prefix/bin/$name"

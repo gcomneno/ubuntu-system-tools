@@ -1,0 +1,500 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+IFS=$'\n\t'
+
+PROGRAM_NAME="$(basename "$0")"
+
+usage() {
+  cat <<'USAGE'
+security-clamav-scan: local read-only ClamAV scanner
+
+Usage:
+  security-clamav-scan [options]
+
+Options:
+  --target PATH   Scan PATH recursively. Repeatable. Replaces default targets.
+  --full          Scan / recursively with a prominent long-scan warning.
+  --log-dir PATH  Write logs under PATH (absolute path required).
+  --yes           Skip the long-scan duration confirmation only.
+  -h, --help      Show this help
+
+Default targets, when present:
+  - $HOME/Downloads
+  - $HOME/Desktop or $HOME/Scrivania
+  - $HOME/Documents
+
+Safety:
+  - read-only inspection only
+  - no sudo, package installation, freshclam, quarantine or deletion
+  - no implicit network access
+  - recursive clamscan with cross-filesystem scanning disabled
+  - log directory excluded from full scans
+  - targets and log paths are validated and symlink broadening is refused
+
+Exit codes:
+  0    clean scan completed
+  1    ClamAV detection, no file modified
+  2    invalid usage or operational error
+  3    explicitly cancelled before scanning
+  130  interrupted by SIGINT
+  143  terminated by SIGTERM
+USAGE
+}
+
+fail() {
+  printf '%s: error: %s\n' "$PROGRAM_NAME" "$*" >&2
+  exit 2
+}
+
+ensure_absolute_path() {
+  local label="$1"
+  local path="$2"
+
+  [[ -n "$path" ]] || fail "$label must not be empty"
+  [[ "$path" == /* ]] || fail "$label must be an absolute path: $path"
+}
+
+ensure_no_symlink_components() {
+  local label="$1"
+  local path="$2"
+  local probe="$path"
+  local parent
+
+  while :; do
+    [[ ! -L "$probe" ]] || fail "refusing symlinked path component in $label: $probe"
+    parent="$(dirname -- "$probe")"
+    [[ "$parent" == "$probe" ]] && break
+    probe="$parent"
+  done
+}
+
+ensure_existing_safe_dir() {
+  local label="$1"
+  local path="$2"
+
+  ensure_absolute_path "$label" "$path"
+  [[ -e "$path" ]] || return 1
+  [[ -d "$path" ]] || fail "$label is not a directory: $path"
+  ensure_no_symlink_components "$label" "$path"
+}
+
+ensure_createable_dir_path() {
+  local label="$1"
+  local path="$2"
+  local probe="$path"
+
+  ensure_absolute_path "$label" "$path"
+  ensure_no_symlink_components "$label" "$path"
+
+  while :; do
+    local parent
+    parent="$(dirname -- "$probe")"
+    [[ "$parent" == "$probe" ]] && break
+    if [[ -L "$parent" ]]; then
+      fail "refusing symlinked parent in $label: $parent"
+    fi
+    if [[ -e "$parent" ]]; then
+      [[ -d "$parent" ]] || fail "$label parent is not a directory: $parent"
+      break
+    fi
+    probe="$parent"
+  done
+}
+
+regex_escape() {
+  local value="$1"
+
+  value="${value//\\/\\\\}"
+  value="${value//./\\.}"
+  value="${value//\*/\\*}"
+  value="${value//\?/\\?}"
+  value="${value//\[/\\[}"
+  value="${value//\]/\\]}"
+  value="${value//^/\\^}"
+  value="${value//\$/\\$}"
+  value="${value//+/\\+}"
+  value="${value//\{/\\{}"
+  value="${value//\}/\\}}"
+  value="${value//|/\\|}"
+  value="${value//(/\\(}"
+  value="${value//)/\\)}"
+
+  printf '%s' "$value"
+}
+
+literal_path_regex() {
+  local path="$1"
+
+  printf '^%s(/|$)' "$(regex_escape "$path")"
+}
+
+is_signature_file() {
+  local dir="$1"
+  local candidate
+
+  shopt -s nullglob
+  for candidate in \
+    "$dir"/*.cvd \
+    "$dir"/*.cld \
+    "$dir"/*.db \
+    "$dir"/*.hdb \
+    "$dir"/*.ldb \
+    "$dir"/*.ndb \
+    "$dir"/*.sdb \
+    "$dir"/*.wdb \
+    "$dir"/*.pdb \
+    "$dir"/*.fp \
+    "$dir"/*.sfp \
+    "$dir"/*.ign \
+    "$dir"/*.ign2 \
+    "$dir"/*.cfg \
+    "$dir"/*.cat \
+    "$dir"/*.crb \
+    "$dir"/*.ftm
+  do
+    if [[ -f "$candidate" ]]; then
+      shopt -u nullglob
+      return 0
+    fi
+  done
+  shopt -u nullglob
+  return 1
+}
+
+append_database_dir() {
+  local dir="$1"
+
+  ensure_existing_safe_dir "signature database directory" "$dir" || return 1
+  is_signature_file "$dir" || return 1
+  CLAMSCAN_ARGS+=("--database=$dir")
+  DB_DIRS+=("$dir")
+}
+
+build_default_targets() {
+  local downloads="$HOME/Downloads"
+  local desktop="$HOME/Desktop"
+  local scrivania="$HOME/Scrivania"
+  local documents="$HOME/Documents"
+
+  DEFAULT_TARGETS=()
+
+  if ensure_existing_safe_dir "HOME" "$HOME"; then
+    :
+  else
+    fail "HOME must exist and be a safe directory: ${HOME:-<unset>}"
+  fi
+
+  if ensure_existing_safe_dir "default target" "$downloads"; then
+    DEFAULT_TARGETS+=("$downloads")
+  fi
+
+  if ensure_existing_safe_dir "default target" "$desktop"; then
+    DEFAULT_TARGETS+=("$desktop")
+  elif ensure_existing_safe_dir "default target" "$scrivania"; then
+    DEFAULT_TARGETS+=("$scrivania")
+  fi
+
+  if ensure_existing_safe_dir "default target" "$documents"; then
+    DEFAULT_TARGETS+=("$documents")
+  fi
+}
+
+log_section() {
+  printf '\n=== %s ===\n' "$1"
+}
+
+render_plan() {
+  log_section 'security-clamav-scan'
+  printf 'Mode: %s\n' "$SCAN_MODE"
+  printf 'Log directory: %s\n' "$LOG_DIR"
+  printf 'Log file: %s\n' "$LOG_FILE"
+  printf 'Lock file: %s\n' "$LOCK_FILE"
+  printf 'Targets:\n'
+  local target
+  for target in "${TARGETS[@]}"; do
+    printf '  - %s\n' "$target"
+  done
+  printf 'Signature databases:\n'
+  local dir
+  for dir in "${DB_DIRS[@]}"; do
+    printf '  - %s\n' "$dir"
+  done
+}
+
+render_result() {
+  local status="$1"
+
+  log_section 'security-clamav-scan result'
+  case "$status" in
+    0) printf 'Result: clean\n' ;;
+    1) printf 'Result: detection found; no file modified\n' ;;
+    2) printf 'Result: operational error\n' ;;
+    3) printf 'Result: cancelled before scanning\n' ;;
+    130) printf 'Result: interrupted by SIGINT\n' ;;
+    143) printf 'Result: terminated by SIGTERM\n' ;;
+    *) printf 'Result: unexpected exit status %s\n' "$status" ;;
+  esac
+}
+
+# shellcheck disable=SC2317
+cleanup() {
+  if [[ -n "${SCAN_PID:-}" ]] && kill -0 "$SCAN_PID" 2>/dev/null; then
+    kill -TERM "$SCAN_PID" 2>/dev/null || true
+    local i
+    for ((i = 0; i < 50; i++)); do
+      kill -0 "$SCAN_PID" 2>/dev/null || break
+      sleep 0.1
+    done
+    if kill -0 "$SCAN_PID" 2>/dev/null; then
+      kill -KILL "$SCAN_PID" 2>/dev/null || true
+    fi
+  fi
+
+  if [[ -n "${SCAN_PID:-}" ]]; then
+    wait "$SCAN_PID" 2>/dev/null || true
+    SCAN_PID=""
+  fi
+
+  if [[ -n "${LOCK_HELD:-}" ]]; then
+    exec {LOCK_FD}>&-
+    LOCK_HELD=""
+  fi
+}
+
+# shellcheck disable=SC2317
+handle_signal() {
+  local signal_name="$1"
+  local exit_code="$2"
+
+  if [[ -n "${SCAN_PID:-}" ]]; then
+    kill -s "$signal_name" "$SCAN_PID" 2>/dev/null || true
+  fi
+
+  cleanup
+  exit "$exit_code"
+}
+
+require_confirmation() {
+  printf 'WARNING: --full scans / recursively and can take many hours.\n' >&2
+  if [[ "$YES" -eq 1 ]]; then
+    return 0
+  fi
+
+  printf 'Continue with the full scan? [y/N] ' >&2
+  local answer=""
+  if ! read -r answer; then
+    printf '\n' >&2
+    return 1
+  fi
+
+  case "${answer,,}" in
+    y|yes)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+run_clamscan() {
+  local status
+
+  : > "$LOG_FILE" || fail "cannot write log file: $LOG_FILE"
+
+  clamscan "${CLAMSCAN_ARGS[@]}" "${TARGETS[@]}" >"$LOG_FILE" 2>&1 &
+  SCAN_PID=$!
+
+  while kill -0 "$SCAN_PID" 2>/dev/null; do
+    sleep 0.1
+  done
+
+  set +e
+  wait "$SCAN_PID"
+  status=$?
+  set -e
+
+  SCAN_PID=""
+  SCAN_STATUS="$status"
+}
+
+TARGETS=()
+FULL=0
+YES=0
+LOG_DIR=""
+SCAN_MODE="default"
+LOCK_HELD=""
+SCAN_PID=""
+SCAN_STATUS=""
+DEFAULT_TARGETS=()
+DB_DIRS=()
+CLAMSCAN_ARGS=()
+STATE_ROOT=""
+
+while (($#)); do
+  case "$1" in
+    --target)
+      shift
+      [[ $# -gt 0 ]] || fail "--target requires a directory path"
+      TARGETS+=("$1")
+      SCAN_MODE="custom targets"
+      shift
+      ;;
+    --full)
+      FULL=1
+      SCAN_MODE="full"
+      shift
+      ;;
+    --log-dir)
+      shift
+      [[ $# -gt 0 ]] || fail "--log-dir requires a path"
+      LOG_DIR="$1"
+      shift
+      ;;
+    --yes)
+      YES=1
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    --)
+      shift
+      [[ $# -eq 0 ]] || fail "positional arguments are not supported"
+      break
+      ;;
+    *)
+      fail "unknown option: $1"
+      ;;
+  esac
+done
+
+if [[ "$FULL" -eq 1 && ${#TARGETS[@]} -gt 0 ]]; then
+  fail "--full cannot be combined with --target"
+fi
+
+HOME_DIR="${HOME:-}"
+if [[ -z "$HOME_DIR" ]]; then
+  fail "HOME must be set"
+fi
+
+ensure_existing_safe_dir "HOME" "$HOME_DIR" || fail "HOME must exist and be a safe directory: $HOME_DIR"
+if [[ -n "${XDG_STATE_HOME:-}" ]]; then
+  ensure_absolute_path "XDG_STATE_HOME" "$XDG_STATE_HOME"
+fi
+
+STATE_ROOT="${XDG_STATE_HOME:-$HOME_DIR/.local/state}/ubuntu-system-tools/clamav"
+if [[ -z "$LOG_DIR" ]]; then
+  LOG_DIR="$STATE_ROOT"
+fi
+[[ "$LOG_DIR" != "/" ]] || fail "log directory must not be /"
+
+ensure_createable_dir_path "state directory" "$STATE_ROOT"
+ensure_createable_dir_path "log directory" "$LOG_DIR"
+
+if ! mkdir -p -- "$STATE_ROOT" "$LOG_DIR" 2>/dev/null; then
+  fail "cannot create log directory: $LOG_DIR"
+fi
+[[ -d "$STATE_ROOT" ]] || fail "state directory is not a directory: $STATE_ROOT"
+[[ ! -L "$STATE_ROOT" ]] || fail "state directory must not be a symlink: $STATE_ROOT"
+[[ -d "$LOG_DIR" ]] || fail "log directory is not a directory: $LOG_DIR"
+[[ ! -L "$LOG_DIR" ]] || fail "log directory must not be a symlink: $LOG_DIR"
+
+LOCK_FILE="${STATE_ROOT}/security-clamav-scan.lock"
+if ! command -v flock >/dev/null 2>&1; then
+  fail "missing required command: flock"
+fi
+if ! command -v clamscan >/dev/null 2>&1; then
+  fail "missing required command: clamscan"
+fi
+
+if ! exec {LOCK_FD}>"$LOCK_FILE"; then
+  fail "cannot open lock file: $LOCK_FILE"
+fi
+LOCK_HELD=1
+if ! flock -n "$LOCK_FD"; then
+  fail "another security-clamav-scan invocation is already running"
+fi
+
+trap 'cleanup' EXIT
+trap 'handle_signal INT 130' INT
+trap 'handle_signal TERM 143' TERM
+
+if [[ -n "${SECURITY_CLAMAV_SCAN_DB_DIRS:-}" ]]; then
+  # Test seam: selftests can point signature discovery at isolated fake
+  # database directories without depending on host ClamAV state.
+  IFS=: read -r -a DB_CANDIDATES <<< "${SECURITY_CLAMAV_SCAN_DB_DIRS}"
+else
+  DB_CANDIDATES=(/var/lib/clamav /usr/local/share/clamav /usr/share/clamav)
+fi
+
+for dir in "${DB_CANDIDATES[@]}"; do
+  [[ -n "$dir" ]] || continue
+  append_database_dir "$dir" || true
+done
+
+if [[ "${#DB_DIRS[@]}" -eq 0 ]]; then
+  fail "missing ClamAV signature databases"
+fi
+
+CLAMSCAN_ARGS+=("--recursive" "--cross-fs=no")
+CLAMSCAN_ARGS+=("--exclude-dir=$(literal_path_regex "$LOG_DIR")")
+
+if [[ "$FULL" -eq 1 ]]; then
+  TARGETS=("/")
+  CLAMSCAN_ARGS+=("--exclude-dir=^/proc(/|$)")
+  CLAMSCAN_ARGS+=("--exclude-dir=^/sys(/|$)")
+  CLAMSCAN_ARGS+=("--exclude-dir=^/dev(/|$)")
+  CLAMSCAN_ARGS+=("--exclude-dir=^/run(/|$)")
+else
+  if [[ ${#TARGETS[@]} -gt 0 ]]; then
+    :
+  else
+    build_default_targets
+    TARGETS=("${DEFAULT_TARGETS[@]}")
+  fi
+fi
+
+if [[ ${#TARGETS[@]} -eq 0 ]]; then
+  fail "no scan targets are available"
+fi
+
+for local_target in "${TARGETS[@]}"; do
+  ensure_existing_safe_dir "scan target" "$local_target" || fail "scan target is missing or unsafe: $local_target"
+done
+
+if [[ "$FULL" -eq 1 ]]; then
+  if ! require_confirmation; then
+    printf 'Cancelled before scanning.\n' >&2
+    exit 3
+  fi
+fi
+
+timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
+LOG_FILE="${LOG_DIR}/security-clamav-scan-${timestamp}-$$.log"
+
+render_plan
+printf '\nScanning...\n'
+
+run_clamscan
+scan_status="$SCAN_STATUS"
+render_result "$scan_status"
+
+if [[ -s "$LOG_FILE" ]]; then
+  printf '\n--- clamscan output ---\n'
+  cat -- "$LOG_FILE"
+  printf '%s\n' '--- end clamscan output ---'
+else
+  printf '\n(no clamscan output)\n'
+fi
+
+case "$scan_status" in
+  0) exit 0 ;;
+  1) exit 1 ;;
+  2) exit 2 ;;
+  3) exit 3 ;;
+  130) exit 130 ;;
+  143) exit 143 ;;
+  *) fail "unexpected clamscan status: $scan_status" ;;
+esac

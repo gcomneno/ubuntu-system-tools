@@ -88,6 +88,18 @@ Inspect recent security-related events:
 security-health --since "24 hours ago"
 ```
 
+Run the local ClamAV scan against the usual personal directories:
+
+``` bash
+security-clamav-scan --yes
+```
+
+Run the weekly read-only health orchestration:
+
+``` bash
+weekly-health
+```
+
 Transcribe a local audio message:
 
 ``` bash
@@ -233,6 +245,32 @@ Features:
 -   login/logout events
 -   kernel warnings
 -   optional output redaction
+
+### `security-clamav-scan`
+
+Safety-first ClamAV scanning for local, user-owned directories or an explicit
+full-system scan.
+
+Features:
+
+-   read-only recursive scanning only
+-   default targets: `Downloads`, `Desktop` or `Scrivania`, and `Documents`
+-   explicit `--full` mode for `/`, with a prominent long-scan warning
+-   per-user nonblocking lock to refuse concurrent scans cleanly
+-   user-controlled log location under XDG state by default
+-   no quarantine, deletion, freshclam, or automatic package management
+
+### `weekly-health`
+
+Portable weekly orchestration for `security-health`, `kernel-health`, and
+`security-clamav-scan --yes`.
+
+Features:
+
+-   strict helper resolution with fail-closed ambiguity handling
+-   preserves component exit codes in the summary
+-   reports aggregate status `0`, `1`, `2`, `130`, or `143`
+-   does not duplicate the owned logic of the component tools
 
 ### `printer-doctor`
 

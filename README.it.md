@@ -55,6 +55,18 @@ Controllo eventi di sicurezza recenti:
 security-health --since "24 hours ago"
 ```
 
+Scansione ClamAV locale delle cartelle personali più comuni:
+
+```bash
+security-clamav-scan --yes
+```
+
+Esecuzione del controllo settimanale read-only:
+
+```bash
+weekly-health
+```
+
 Trascrizione locale di un messaggio audio:
 
 ```bash
@@ -115,6 +127,30 @@ Trova dove un pacchetto, una dipendenza, un binario o un identificatore è refer
 
 ### `security-health`
 Legge eventi rilevanti del journal locale, inclusi sudo, login/logout e warning kernel.
+
+### `security-clamav-scan`
+Scansione ClamAV sicura e in sola lettura per cartelle locali dell'utente, oppure
+per una scansione esplicita di `/`.
+
+Caratteristiche:
+
+- lettura ricorsiva e sola lettura
+- target predefiniti: `Downloads`, `Desktop` oppure `Scrivania`, e `Documents`
+- modalità `--full` esplicita per `/`, con avviso chiaro sulle scansioni lunghe
+- lock non bloccante per utente per rifiutare le esecuzioni concorrenti
+- log sotto XDG state di default
+- nessuna quarantena, nessuna cancellazione, nessun `freshclam`, nessuna gestione automatica dei pacchetti
+
+### `weekly-health`
+Orchestrazione portabile settimanale per `security-health`, `kernel-health` e
+`security-clamav-scan --yes`.
+
+Caratteristiche:
+
+- risoluzione rigorosa degli helper con fallimento su ambiguità
+- preserva gli exit code dei componenti nel riepilogo
+- riporta uno status aggregato `0`, `1`, `2`, `130` o `143`
+- non duplica la logica dei singoli strumenti
 
 ### `printer-doctor`
 Diagnosi e recupero per code CUPS.

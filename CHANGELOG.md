@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+### Added
+- Add `security-clamav-scan`, a read-only ClamAV scanner with explicit default targets, a full-system warning, per-user locking, and user-controlled logging.
+- Add `weekly-health`, a portable weekly orchestrator for `security-health`, `kernel-health`, and `security-clamav-scan --yes`.
+- Add bilingual documentation for the new ClamAV scanner and weekly orchestration flow.
+
+### Changed
+- Expand the installation inventory, selftests, README, and release-package coverage for the new weekly security health tools.
+
 ## v0.3.0 — 2026-08-09
 
 ### Added

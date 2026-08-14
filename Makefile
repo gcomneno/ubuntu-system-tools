@@ -8,7 +8,7 @@ BINDIR ?= $(PREFIX)/bin
 FORCE ?= 0
 DISTDIR ?= $(REPO_ROOT)/dist
 
-TOOLS := bin/hdd_cleanup bin/security-health bin/who-uses bin/printer-doctor bin/garbage-collector bin/bulk-epub-to-azw3 bin/bulk-ebook-convert bin/pdf2epub bin/safe-uninstall bin/audio-transcribe bin/kernel-health
+TOOLS := bin/hdd_cleanup bin/security-health bin/security-clamav-scan bin/weekly-health bin/who-uses bin/printer-doctor bin/garbage-collector bin/bulk-epub-to-azw3 bin/bulk-ebook-convert bin/pdf2epub bin/safe-uninstall bin/audio-transcribe bin/kernel-health
 
 .PHONY: \
 	init-config \
@@ -151,6 +151,8 @@ check:
 	tests/selftest_kernel_health.sh
 	tests/selftest_pdf2epub.sh
 	tests/selftest_safe_uninstall.sh
+	tests/selftest_security_clamav_scan.sh
 	tests/selftest_audio_transcribe.sh
+	tests/selftest_weekly_health.sh
 	tests/selftest_install.sh
 	bash tests/selftest_release_package.sh
