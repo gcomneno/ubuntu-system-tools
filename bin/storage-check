@@ -3,6 +3,7 @@ set -Eeuo pipefail
 IFS=$'\n\t'
 
 PROGRAM_NAME="$(basename -- "$0")"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 
 PROJECTS_DIR="${PROJECTS_DIR:-$HOME/Progetti}"
 STORAGE_ROOT_WARN_PERCENT="${STORAGE_ROOT_WARN_PERCENT:-85}"
@@ -11,6 +12,11 @@ STORAGE_PROJECT_ELEPHANT_MAX_DEPTH="${STORAGE_PROJECT_ELEPHANT_MAX_DEPTH:-2}"
 
 CHECKPOINT_FILE=""
 SAVE_CHECKPOINT_FILE=""
+RUN_DOCKER_AUDIT=0
+RUN_DDEV_AUDIT=0
+
+STORAGE_DOCKER_AUDIT_BIN="${STORAGE_DOCKER_AUDIT_BIN:-$SCRIPT_DIR/storage-docker-audit}"
+STORAGE_DDEV_AUDIT_BIN="${STORAGE_DDEV_AUDIT_BIN:-$SCRIPT_DIR/storage-ddev-audit}"
 
 fail() {
   printf '%s: error: %s\n' "$PROGRAM_NAME" "$*" >&2
@@ -47,6 +53,12 @@ OPTIONS
   --elephant-max-depth N
       Maximum depth below --projects-dir considered for elephants.
       Default: $STORAGE_PROJECT_ELEPHANT_MAX_DEPTH or 2
+
+  --docker
+      Run the read-only Docker storage evidence audit.
+
+  --ddev
+      Run the read-only DDEV provenance and metadata audit.
 
   -h, --help
       Show this help.
@@ -111,6 +123,14 @@ parse_args() {
         (($# >= 2)) || fail "--elephant-max-depth requires a value"
         STORAGE_PROJECT_ELEPHANT_MAX_DEPTH="$2"
         shift 2
+        ;;
+      --docker)
+        RUN_DOCKER_AUDIT=1
+        shift
+        ;;
+      --ddev)
+        RUN_DDEV_AUDIT=1
+        shift
         ;;
       -h|--help)
         usage
@@ -321,6 +341,28 @@ render_elephants() {
   trap - RETURN
 }
 
+run_optional_audits() {
+  if (( RUN_DOCKER_AUDIT )); then
+    [[ -x "$STORAGE_DOCKER_AUDIT_BIN" ]] ||
+      fail "Docker storage audit tool is unavailable: $STORAGE_DOCKER_AUDIT_BIN"
+
+    printf '\n===== OPTIONAL DOCKER AUDIT =====\n'
+
+    "$STORAGE_DOCKER_AUDIT_BIN" ||
+      fail "Docker storage audit failed"
+  fi
+
+  if (( RUN_DDEV_AUDIT )); then
+    [[ -x "$STORAGE_DDEV_AUDIT_BIN" ]] ||
+      fail "DDEV storage audit tool is unavailable: $STORAGE_DDEV_AUDIT_BIN"
+
+    printf '\n===== OPTIONAL DDEV AUDIT =====\n'
+
+    "$STORAGE_DDEV_AUDIT_BIN" --projects-dir "$PROJECTS_DIR" ||
+      fail "DDEV storage audit failed"
+  fi
+}
+
 save_checkpoint() {
   local file="$1"
   local parent
@@ -429,6 +471,7 @@ main() {
   fi
 
   render_elephants
+  run_optional_audits
 
   if [[ -n "$SAVE_CHECKPOINT_FILE" ]]; then
     save_checkpoint "$SAVE_CHECKPOINT_FILE"

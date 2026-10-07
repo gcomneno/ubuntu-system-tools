@@ -44,6 +44,8 @@ rc="$(run_capture "$out" "$err" "$tool" --help)"
 [[ "$rc" -eq 0 ]] || fail "help returned $rc"
 assert_contains "$out" 'storage-check - read-only storage health and growth attribution' 'help title missing'
 assert_contains "$out" '--save-checkpoint may create or replace only the explicitly selected' 'checkpoint safety contract missing from help'
+assert_contains "$out" '--docker' 'Docker audit option missing from help'
+assert_contains "$out" '--ddev' 'DDEV audit option missing from help'
 
 printf '%s\n' 'TEST: normal inspection'
 mkdir -p "$tmp/projects/repo-a" "$tmp/projects/repo-b"
@@ -65,6 +67,51 @@ assert_contains "$out" '===== STORAGE HEALTH =====' 'health section missing'
 assert_contains "$out" 'CHECKPOINT_STATUS=NOT_REQUESTED' 'checkpoint status missing'
 assert_contains "$out" 'PROJECTS_DIR_STATUS=AVAILABLE' 'projects status missing'
 assert_contains "$out" 'AUTOMATIC_DELETION=NO' 'safety result missing'
+
+printf '%s\n' 'TEST: optional audit orchestration'
+
+fake_docker_audit="$tmp/fake-storage-docker-audit"
+fake_ddev_audit="$tmp/fake-storage-ddev-audit"
+
+cat > "$fake_docker_audit" <<'EOF'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+printf '%s\n' 'FAKE_DOCKER_AUDIT=PASS'
+printf '%s\n' 'STALE_CONFIRMED_COUNT=0'
+printf '%s\n' 'AUTOMATIC_DELETION=NO'
+EOF
+
+cat > "$fake_ddev_audit" <<'EOF'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+if [[ "$#" -ne 2 || "$1" != "--projects-dir" || "$2" != "$EXPECTED_PROJECTS_DIR" ]]; then
+  printf '%s\n' 'unexpected DDEV audit invocation' >&2
+  exit 91
+fi
+
+printf '%s\n' 'FAKE_DDEV_AUDIT=PASS'
+printf '%s\n' 'STALE_CONFIRMED_COUNT=0'
+printf '%s\n' 'AUTOMATIC_DELETION=NO'
+EOF
+
+chmod 0755 "$fake_docker_audit" "$fake_ddev_audit"
+
+out="$tmp/orchestration.out"
+err="$tmp/orchestration.err"
+
+rc="$(
+  run_capture     "$out"     "$err"     env     STORAGE_DOCKER_AUDIT_BIN="$fake_docker_audit"     STORAGE_DDEV_AUDIT_BIN="$fake_ddev_audit"     EXPECTED_PROJECTS_DIR="$tmp/projects"     "$tool"     --projects-dir "$tmp/projects"     --elephant-min-bytes 999999999999     --root-warn-percent 100     --docker     --ddev
+)"
+
+[[ "$rc" -eq 0 ]] || fail "optional audit orchestration returned $rc"
+assert_contains "$out" '===== OPTIONAL DOCKER AUDIT =====' 'Docker audit section missing'
+assert_contains "$out" 'FAKE_DOCKER_AUDIT=PASS' 'Docker audit delegation missing'
+assert_contains "$out" '===== OPTIONAL DDEV AUDIT =====' 'DDEV audit section missing'
+assert_contains "$out" 'FAKE_DDEV_AUDIT=PASS' 'DDEV audit delegation missing'
+
+# Restore the normal-inspection output consumed by the following elephant assertions.
+out="$tmp/normal.out"
 
 printf '%s\n' 'TEST: elephant ordering and threshold'
 mapfile -t elephant_lines < <(grep '^ELEPHANT_BYTES=' "$out")

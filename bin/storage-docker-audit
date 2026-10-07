@@ -1,0 +1,378 @@
+#!/usr/bin/env bash
+
+set -Eeuo pipefail
+
+usage() {
+    cat <<'EOF'
+storage-docker-audit — read-only Docker storage evidence audit
+
+Usage:
+  storage-docker-audit
+  storage-docker-audit --help
+
+Inspects:
+  - Docker aggregate disk usage
+  - containers
+  - images
+  - local volumes
+  - BuildKit/buildx cache
+
+Semantic classes:
+  ACTIVE               Positive runtime evidence exists.
+  INACTIVE_PROTECTED   Artifact is inactive but still referenced by Docker state.
+  STALE_CANDIDATE      Docker reports no runtime/container reference, but provenance
+                       is insufficient to authorize deletion.
+  STALE_CONFIRMED      Reserved for stronger provenance-aware correlation. This
+                       Docker-only audit never emits this class.
+  UNKNOWN              Evidence is missing or contradictory.
+
+Safety:
+  Read-only. No Docker prune/remove/delete command is executed.
+  AUTOMATIC_DELETION is always NO.
+
+Exit status:
+  0  Audit completed successfully.
+  2  Invalid invocation, missing dependency, or Docker operational failure.
+EOF
+}
+
+die() {
+    printf 'ERROR=%s\n' "$1" >&2
+    exit 2
+}
+
+require_command() {
+    local command_name="$1"
+
+    command -v -- "$command_name" >/dev/null 2>&1 ||
+        die "missing_dependency:$command_name"
+}
+
+size_to_bytes() {
+    local value="$1"
+
+    awk -v input="$value" '
+        BEGIN {
+            if (input == "" || input == "N/A") {
+                print "UNAVAILABLE"
+                exit
+            }
+
+            if (input !~ /^[0-9]+([.][0-9]+)?([kMGTPE]?B)$/) {
+                print "UNAVAILABLE"
+                exit
+            }
+
+            number = input
+            sub(/[kMGTPE]?B$/, "", number)
+
+            unit = input
+            sub(/^[0-9]+([.][0-9]+)?/, "", unit)
+
+            multiplier = 1
+
+            if (unit == "kB") multiplier = 1000
+            else if (unit == "MB") multiplier = 1000000
+            else if (unit == "GB") multiplier = 1000000000
+            else if (unit == "TB") multiplier = 1000000000000
+            else if (unit == "PB") multiplier = 1000000000000000
+            else if (unit == "EB") multiplier = 1000000000000000000
+            else if (unit != "B") {
+                print "UNAVAILABLE"
+                exit
+            }
+
+            printf "%.0f\n", number * multiplier
+        }
+    '
+}
+
+extract_reclaimable_size() {
+    local value="$1"
+    local amount="${value%% *}"
+
+    size_to_bytes "$amount"
+}
+
+count_lines() {
+    local value="$1"
+
+    if [[ -z "$value" ]]; then
+        printf '0\n'
+    else
+        printf '%s\n' "$value" | awk 'NF { count++ } END { print count + 0 }'
+    fi
+}
+
+if (( $# > 1 )); then
+    usage >&2
+    exit 2
+fi
+
+if (( $# == 1 )); then
+    case "$1" in
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            usage >&2
+            exit 2
+            ;;
+    esac
+fi
+
+require_command docker
+require_command jq
+require_command awk
+require_command sort
+
+if ! docker version --format '{{.Server.Version}}' >/dev/null 2>&1; then
+    printf 'DOCKER_STATUS=UNAVAILABLE\n'
+    printf 'AUTOMATIC_DELETION=NO\n'
+    exit 2
+fi
+
+printf '%s\n' '===== DOCKER STORAGE SUMMARY ====='
+printf 'DOCKER_STATUS=AVAILABLE\n'
+
+system_df="$(
+    docker system df --format json 2>/dev/null
+)" || die "docker_system_df_failed"
+
+summary_value() {
+    local type="$1"
+    local field="$2"
+
+    printf '%s\n' "$system_df" |
+        jq -r \
+            --arg type "$type" \
+            --arg field "$field" \
+            'select(.Type == $type) | .[$field]' |
+        head -n 1
+}
+
+image_total="$(summary_value "Images" "TotalCount")"
+image_active="$(summary_value "Images" "Active")"
+image_size_raw="$(summary_value "Images" "Size")"
+image_reclaimable_raw="$(summary_value "Images" "Reclaimable")"
+
+container_total="$(summary_value "Containers" "TotalCount")"
+container_active="$(summary_value "Containers" "Active")"
+container_size_raw="$(summary_value "Containers" "Size")"
+container_reclaimable_raw="$(summary_value "Containers" "Reclaimable")"
+
+volume_total="$(summary_value "Local Volumes" "TotalCount")"
+volume_active="$(summary_value "Local Volumes" "Active")"
+volume_size_raw="$(summary_value "Local Volumes" "Size")"
+volume_reclaimable_raw="$(summary_value "Local Volumes" "Reclaimable")"
+
+build_cache_total="$(summary_value "Build Cache" "TotalCount")"
+build_cache_active="$(summary_value "Build Cache" "Active")"
+build_cache_size_raw="$(summary_value "Build Cache" "Size")"
+build_cache_reclaimable_raw="$(summary_value "Build Cache" "Reclaimable")"
+
+printf 'IMAGE_TOTAL=%s\n' "${image_total:-UNAVAILABLE}"
+printf 'IMAGE_ACTIVE=%s\n' "${image_active:-UNAVAILABLE}"
+printf 'IMAGE_SIZE_BYTES=%s\n' "$(size_to_bytes "${image_size_raw:-}")"
+printf 'IMAGE_RECLAIMABLE_BYTES=%s\n' "$(extract_reclaimable_size "${image_reclaimable_raw:-}")"
+
+printf 'CONTAINER_TOTAL=%s\n' "${container_total:-UNAVAILABLE}"
+printf 'CONTAINER_ACTIVE=%s\n' "${container_active:-UNAVAILABLE}"
+printf 'CONTAINER_SIZE_BYTES=%s\n' "$(size_to_bytes "${container_size_raw:-}")"
+printf 'CONTAINER_RECLAIMABLE_BYTES=%s\n' "$(extract_reclaimable_size "${container_reclaimable_raw:-}")"
+
+printf 'VOLUME_TOTAL=%s\n' "${volume_total:-UNAVAILABLE}"
+printf 'VOLUME_ACTIVE=%s\n' "${volume_active:-UNAVAILABLE}"
+printf 'VOLUME_SIZE_BYTES=%s\n' "$(size_to_bytes "${volume_size_raw:-}")"
+printf 'VOLUME_RECLAIMABLE_BYTES=%s\n' "$(extract_reclaimable_size "${volume_reclaimable_raw:-}")"
+
+printf 'BUILD_CACHE_TOTAL=%s\n' "${build_cache_total:-UNAVAILABLE}"
+printf 'BUILD_CACHE_ACTIVE=%s\n' "${build_cache_active:-UNAVAILABLE}"
+printf 'BUILD_CACHE_SIZE_BYTES=%s\n' "$(size_to_bytes "${build_cache_size_raw:-}")"
+printf 'BUILD_CACHE_RECLAIMABLE_BYTES=%s\n' "$(extract_reclaimable_size "${build_cache_reclaimable_raw:-}")"
+
+active_count=0
+inactive_protected_count=0
+stale_candidate_count=0
+unknown_count=0
+
+printf '\n%s\n' '===== DOCKER CONTAINERS ====='
+
+containers_json="$(
+    docker ps -a --no-trunc --format '{{json .}}' 2>/dev/null
+)" || die "docker_container_inventory_failed"
+
+if [[ -n "$containers_json" ]]; then
+    while IFS= read -r record; do
+        id="$(jq -r '.ID // ""' <<<"$record")"
+        name="$(jq -r '.Names // ""' <<<"$record")"
+        state="$(jq -r '.State // ""' <<<"$record")"
+        image="$(jq -r '.Image // ""' <<<"$record")"
+
+        if [[ -z "$id" || -z "$state" ]]; then
+            class="UNKNOWN"
+            ((unknown_count += 1))
+        elif [[ "$state" == "running" ]]; then
+            class="ACTIVE"
+            ((active_count += 1))
+        else
+            class="INACTIVE_PROTECTED"
+            ((inactive_protected_count += 1))
+        fi
+
+        printf 'TYPE=CONTAINER|ID=%s|NAME=%s|IMAGE=%s|STATE=%s|CLASS=%s\n' \
+            "$id" "$name" "$image" "$state" "$class"
+    done <<<"$containers_json"
+fi
+
+printf '\n%s\n' '===== DOCKER IMAGES ====='
+
+images_json="$(
+    docker image ls --no-trunc --format '{{json .}}' 2>/dev/null
+)" || die "docker_image_inventory_failed"
+
+if [[ -n "$images_json" ]]; then
+    while IFS= read -r record; do
+        id="$(jq -r '.ID // ""' <<<"$record")"
+        repository="$(jq -r '.Repository // ""' <<<"$record")"
+        tag="$(jq -r '.Tag // ""' <<<"$record")"
+        size_raw="$(jq -r '.Size // ""' <<<"$record")"
+
+        if [[ -z "$id" ]]; then
+            class="UNKNOWN"
+            running_refs="UNAVAILABLE"
+            all_refs="UNAVAILABLE"
+            ((unknown_count += 1))
+        else
+            running_output="$(
+                docker ps \
+                    --filter "ancestor=$id" \
+                    --format '{{.ID}}' 2>/dev/null
+            )" || die "docker_image_running_reference_failed:$id"
+
+            all_output="$(
+                docker ps -a \
+                    --filter "ancestor=$id" \
+                    --format '{{.ID}}' 2>/dev/null
+            )" || die "docker_image_reference_failed:$id"
+
+            running_refs="$(count_lines "$running_output")"
+            all_refs="$(count_lines "$all_output")"
+
+            if (( running_refs > 0 )); then
+                class="ACTIVE"
+                ((active_count += 1))
+            elif (( all_refs > 0 )); then
+                class="INACTIVE_PROTECTED"
+                ((inactive_protected_count += 1))
+            else
+                class="STALE_CANDIDATE"
+                ((stale_candidate_count += 1))
+            fi
+        fi
+
+        printf 'TYPE=IMAGE|ID=%s|REF=%s:%s|SIZE_BYTES=%s|RUNNING_REFS=%s|CONTAINER_REFS=%s|CLASS=%s\n' \
+            "$id" \
+            "$repository" \
+            "$tag" \
+            "$(size_to_bytes "$size_raw")" \
+            "$running_refs" \
+            "$all_refs" \
+            "$class"
+    done <<<"$images_json"
+fi
+
+printf '\n%s\n' '===== DOCKER VOLUMES ====='
+
+volumes_json="$(
+    docker volume ls --format '{{json .}}' 2>/dev/null
+)" || die "docker_volume_inventory_failed"
+
+if [[ -n "$volumes_json" ]]; then
+    while IFS= read -r record; do
+        name="$(jq -r '.Name // ""' <<<"$record")"
+        driver="$(jq -r '.Driver // ""' <<<"$record")"
+
+        if [[ -z "$name" ]]; then
+            class="UNKNOWN"
+            running_refs="UNAVAILABLE"
+            all_refs="UNAVAILABLE"
+            ((unknown_count += 1))
+        else
+            running_output="$(
+                docker ps \
+                    --filter "volume=$name" \
+                    --format '{{.ID}}' 2>/dev/null
+            )" || die "docker_volume_running_reference_failed:$name"
+
+            all_output="$(
+                docker ps -a \
+                    --filter "volume=$name" \
+                    --format '{{.ID}}' 2>/dev/null
+            )" || die "docker_volume_reference_failed:$name"
+
+            running_refs="$(count_lines "$running_output")"
+            all_refs="$(count_lines "$all_output")"
+
+            if (( running_refs > 0 )); then
+                class="ACTIVE"
+                ((active_count += 1))
+            elif (( all_refs > 0 )); then
+                class="INACTIVE_PROTECTED"
+                ((inactive_protected_count += 1))
+            else
+                class="STALE_CANDIDATE"
+                ((stale_candidate_count += 1))
+            fi
+        fi
+
+        printf 'TYPE=VOLUME|NAME=%s|DRIVER=%s|RUNNING_REFS=%s|CONTAINER_REFS=%s|CLASS=%s\n' \
+            "$name" "$driver" "$running_refs" "$all_refs" "$class"
+    done <<<"$volumes_json"
+fi
+
+printf '\n%s\n' '===== DOCKER BUILD CACHE ====='
+
+build_cache_json="$(
+    docker buildx du --format json 2>/dev/null
+)" || die "docker_build_cache_inventory_failed"
+
+if [[ -n "$build_cache_json" ]]; then
+    while IFS= read -r record; do
+        id="$(jq -r '.ID // ""' <<<"$record")"
+        reclaimable="$(jq -r 'if .Reclaimable == true then "YES" elif .Reclaimable == false then "NO" else "UNKNOWN" end' <<<"$record")"
+        shared="$(jq -r 'if .Shared == true then "YES" elif .Shared == false then "NO" else "UNKNOWN" end' <<<"$record")"
+        mutable="$(jq -r 'if .Mutable == true then "YES" elif .Mutable == false then "NO" else "UNKNOWN" end' <<<"$record")"
+        size_raw="$(jq -r '.Size // ""' <<<"$record")"
+        last_used="$(jq -r '.LastUsedAt // "UNKNOWN"' <<<"$record")"
+
+        if [[ -z "$id" || "$reclaimable" == "UNKNOWN" ]]; then
+            class="UNKNOWN"
+            ((unknown_count += 1))
+        elif [[ "$reclaimable" == "YES" ]]; then
+            class="STALE_CANDIDATE"
+            ((stale_candidate_count += 1))
+        else
+            class="INACTIVE_PROTECTED"
+            ((inactive_protected_count += 1))
+        fi
+
+        printf 'TYPE=BUILD_CACHE|ID=%s|SIZE_BYTES=%s|DOCKER_RECLAIMABLE=%s|SHARED=%s|MUTABLE=%s|LAST_USED=%s|CLASS=%s\n' \
+            "$id" \
+            "$(size_to_bytes "$size_raw")" \
+            "$reclaimable" \
+            "$shared" \
+            "$mutable" \
+            "$last_used" \
+            "$class"
+    done <<<"$build_cache_json"
+fi
+
+printf '\n%s\n' '===== DOCKER AUDIT RESULT ====='
+printf 'ACTIVE_COUNT=%d\n' "$active_count"
+printf 'INACTIVE_PROTECTED_COUNT=%d\n' "$inactive_protected_count"
+printf 'STALE_CANDIDATE_COUNT=%d\n' "$stale_candidate_count"
+printf 'STALE_CONFIRMED_COUNT=0\n'
+printf 'UNKNOWN_COUNT=%d\n' "$unknown_count"
+printf 'AUTOMATIC_DELETION=NO\n'

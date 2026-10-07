@@ -98,6 +98,7 @@ Controllo dello stato storage, dei progetti più grandi e della crescita rispett
 storage-check
 storage-check --save-checkpoint "$HOME/.cache/ubuntu-system-tools/storage.env"
 storage-check --checkpoint "$HOME/.cache/ubuntu-system-tools/storage.env"
+storage-check --docker --ddev
 ```
 
 Diagnosi di una coda CUPS:
@@ -131,6 +132,21 @@ Individua artefatti rigenerabili come `node_modules/`, `.venv/`, `target/` e cac
 Scanner in sola lettura per artefatti eliminabili e spazio recuperabile stimato.
 
 ### `storage-check`
+
+L'orchestratore storage resta read-only per impostazione predefinita. I flag
+opzionali `--docker` e `--ddev` delegano ai tool dedicati
+`storage-docker-audit` e `storage-ddev-audit`. Gli audit classificano
+l'evidenza in modo conservativo come `ACTIVE`, `INACTIVE_PROTECTED`,
+`STALE_CANDIDATE` oppure `UNKNOWN`; i layer Docker-only e DDEV-only non
+promuovono mai un artefatto a `STALE_CONFIRMED`.
+
+`storage-docker-audit` ispeziona storage Docker, riferimenti di
+container/immagini/volumi e cache BuildKit senza eseguire operazioni
+prune/remove. `storage-ddev-audit` correla registry DDEV, root dei progetti,
+evidenza dei worktree Git e metadata approot generati. Un path generato
+obsoleto viene riportato come `DDEV_METADATA_STATE=STALE_PATH`: non costituisce
+autorità alla cancellazione.
+
 Controllo in sola lettura dello stato storage e dell'attribuzione della crescita.
 
 Caratteristiche:

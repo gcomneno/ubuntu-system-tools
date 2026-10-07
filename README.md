@@ -134,6 +134,7 @@ Inspect storage health, project elephants and optional growth against a checkpoi
 storage-check
 storage-check --save-checkpoint "$HOME/.cache/ubuntu-system-tools/storage.env"
 storage-check --checkpoint "$HOME/.cache/ubuntu-system-tools/storage.env"
+storage-check --docker --ddev
 ```
 
 Diagnose a CUPS printer queue:
@@ -232,6 +233,20 @@ Read-only scanner for removable development artifacts such as `.venv/`,
 -   Prints total potentially reclaimable space
 
 ### `storage-check`
+
+The storage orchestrator remains read-only by default. Optional `--docker` and
+`--ddev` flags delegate to the dedicated `storage-docker-audit` and
+`storage-ddev-audit` tools. Those audits classify evidence conservatively as
+`ACTIVE`, `INACTIVE_PROTECTED`, `STALE_CANDIDATE`, or `UNKNOWN`; the
+Docker-only and DDEV-only layers never promote an artifact to
+`STALE_CONFIRMED`.
+
+`storage-docker-audit` inspects Docker storage, container/image/volume
+references, and BuildKit cache without running prune/remove operations.
+`storage-ddev-audit` correlates the DDEV registry, project roots, Git worktree
+evidence, and generated approot metadata. A stale generated path is reported
+as `DDEV_METADATA_STATE=STALE_PATH`; it is not deletion authority.
+
 
 Read-only storage health and growth attribution for the local Ubuntu host.
 

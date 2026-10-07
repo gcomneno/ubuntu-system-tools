@@ -1,0 +1,341 @@
+#!/usr/bin/env bash
+
+set -Eeuo pipefail
+
+PROJECTS_DIR="${PROJECTS_DIR:-$HOME/Progetti}"
+
+usage() {
+    cat <<'EOF'
+storage-ddev-audit — read-only DDEV provenance and metadata audit
+
+Usage:
+  storage-ddev-audit [--projects-dir PATH]
+  storage-ddev-audit --help
+
+Inspects:
+  - DDEV registered projects
+  - DDEV project roots found below the projects directory
+  - project source/config presence
+  - Git worktree evidence when Git is available
+  - generated DDEV approot metadata consistency
+
+Semantic classes:
+  ACTIVE               DDEV reports an active project and source evidence exists.
+  INACTIVE_PROTECTED   Source evidence exists, even if DDEV is paused or unregistered.
+  STALE_CANDIDATE      DDEV registry evidence exists but its source root is missing.
+  STALE_CONFIRMED      Reserved for cross-source correlation. This DDEV-only audit
+                       never emits this class.
+  UNKNOWN              Evidence is malformed or insufficient.
+
+Metadata states:
+  CONSISTENT   Generated approot metadata matches the current project root.
+  STALE_PATH   Generated approot metadata points somewhere else.
+  UNAVAILABLE  Generated approot metadata is absent or cannot establish a path.
+
+Safety:
+  Read-only. No ddev delete/remove/poweroff command is executed.
+  AUTOMATIC_DELETION is always NO.
+
+Exit status:
+  0  Audit completed successfully.
+  2  Invalid invocation, missing dependency, or DDEV operational failure.
+EOF
+}
+
+die() {
+    printf 'ERROR=%s\n' "$1" >&2
+    exit 2
+}
+
+require_command() {
+    local command_name="$1"
+
+    command -v -- "$command_name" >/dev/null 2>&1 ||
+        die "missing_dependency:$command_name"
+}
+
+generated_approots() {
+    local root="$1"
+    local generated="$root/.ddev/.ddev-docker-compose-full.yaml"
+
+    if [[ ! -f "$generated" ]]; then
+        return 0
+    fi
+
+    awk '
+        /^[[:space:]]*com[.]ddev[.]approot:[[:space:]]*/ {
+            sub(/^[[:space:]]*com[.]ddev[.]approot:[[:space:]]*/, "")
+            gsub(/^["'\'']|["'\'']$/, "")
+            print
+        }
+    ' "$generated" |
+        sort -u
+}
+
+metadata_state() {
+    local root="$1"
+    local approots="$2"
+    local line=""
+    local count=0
+    local mismatch=0
+
+    if [[ -z "$approots" ]]; then
+        printf 'UNAVAILABLE\n'
+        return
+    fi
+
+    while IFS= read -r line; do
+        [[ -n "$line" ]] || continue
+        ((count += 1))
+
+        if [[ "$line" != "$root" ]]; then
+            mismatch=1
+        fi
+    done <<<"$approots"
+
+    if (( count == 0 )); then
+        printf 'UNAVAILABLE\n'
+    elif (( mismatch != 0 )); then
+        printf 'STALE_PATH\n'
+    else
+        printf 'CONSISTENT\n'
+    fi
+}
+
+join_lines() {
+    local value="$1"
+
+    if [[ -z "$value" ]]; then
+        printf 'UNAVAILABLE\n'
+    else
+        printf '%s\n' "$value" |
+            awk '
+                NF {
+                    if (seen++) {
+                        printf ","
+                    }
+                    printf "%s", $0
+                }
+                END {
+                    printf "\n"
+                }
+            '
+    fi
+}
+
+git_state() {
+    local root="$1"
+    local top=""
+
+    if ! command -v -- git >/dev/null 2>&1; then
+        printf 'UNAVAILABLE\n'
+        return
+    fi
+
+    if ! git -C "$root" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        printf 'NOT_GIT\n'
+        return
+    fi
+
+    top="$(git -C "$root" rev-parse --show-toplevel 2>/dev/null)" || {
+        printf 'UNAVAILABLE\n'
+        return
+    }
+
+    if [[ "$top" == "$root" ]]; then
+        printf 'WORKTREE\n'
+    else
+        printf 'NESTED_GIT\n'
+    fi
+}
+
+if (( $# > 2 )); then
+    usage >&2
+    exit 2
+fi
+
+while (( $# > 0 )); do
+    case "$1" in
+        --projects-dir)
+            (( $# >= 2 )) || {
+                usage >&2
+                exit 2
+            }
+
+            PROJECTS_DIR="$2"
+            shift 2
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            usage >&2
+            exit 2
+            ;;
+    esac
+done
+
+[[ "$PROJECTS_DIR" == /* ]] ||
+    die "projects_dir_must_be_absolute"
+
+require_command ddev
+require_command jq
+require_command awk
+require_command find
+require_command sort
+
+registry_json="$(
+    ddev list --json-output 2>/dev/null
+)" || die "ddev_list_failed"
+
+if ! jq -e '.raw | type == "array"' >/dev/null 2>&1 <<<"$registry_json"; then
+    die "invalid_ddev_json"
+fi
+
+printf '%s\n' '===== DDEV SUMMARY ====='
+printf 'DDEV_STATUS=AVAILABLE\n'
+printf 'PROJECTS_DIR=%s\n' "$PROJECTS_DIR"
+printf 'REGISTERED_PROJECT_COUNT=%s\n' \
+    "$(jq -r '.raw | length' <<<"$registry_json")"
+
+if [[ -d "$PROJECTS_DIR" ]]; then
+    printf 'PROJECTS_DIR_STATUS=AVAILABLE\n'
+else
+    printf 'PROJECTS_DIR_STATUS=UNAVAILABLE\n'
+fi
+
+active_count=0
+inactive_protected_count=0
+stale_candidate_count=0
+unknown_count=0
+discovered_unregistered_count=0
+
+printf '\n%s\n' '===== DDEV REGISTERED PROJECTS ====='
+
+registered_records="$(
+    jq -c '.raw[]?' <<<"$registry_json" |
+        sort
+)"
+
+if [[ -n "$registered_records" ]]; then
+    while IFS= read -r record; do
+        name="$(jq -r '.name // ""' <<<"$record")"
+        status="$(jq -r '.status // ""' <<<"$record")"
+        approot="$(jq -r '.approot // ""' <<<"$record")"
+        type="$(jq -r '.type // ""' <<<"$record")"
+
+        source_state="MISSING"
+        config_state="MISSING"
+        git_evidence="UNAVAILABLE"
+        generated=""
+        generated_display="UNAVAILABLE"
+        ddev_metadata_state="UNAVAILABLE"
+
+        if [[ -z "$name" || -z "$approot" ]]; then
+            class="UNKNOWN"
+            ((unknown_count += 1))
+        else
+            if [[ -d "$approot" ]]; then
+                source_state="PRESENT"
+                git_evidence="$(git_state "$approot")"
+
+                if [[ -f "$approot/.ddev/config.yaml" ]]; then
+                    config_state="PRESENT"
+                fi
+
+                generated="$(generated_approots "$approot")"
+                generated_display="$(join_lines "$generated")"
+                ddev_metadata_state="$(metadata_state "$approot" "$generated")"
+
+                case "${status,,}" in
+                    running|started|ok)
+                        class="ACTIVE"
+                        ((active_count += 1))
+                        ;;
+                    *)
+                        class="INACTIVE_PROTECTED"
+                        ((inactive_protected_count += 1))
+                        ;;
+                esac
+            else
+                class="STALE_CANDIDATE"
+                ddev_metadata_state="STALE_PATH"
+                ((stale_candidate_count += 1))
+            fi
+        fi
+
+        printf 'PROJECT=%s|DDEV_STATUS=%s|TYPE=%s|APPROOT=%s|REGISTRY_STATE=REGISTERED|SOURCE_STATE=%s|CONFIG_STATE=%s|GIT_STATE=%s|DDEV_METADATA_STATE=%s|GENERATED_APPROOT=%s|CLASS=%s\n' \
+            "$name" \
+            "${status:-UNKNOWN}" \
+            "${type:-UNKNOWN}" \
+            "${approot:-UNKNOWN}" \
+            "$source_state" \
+            "$config_state" \
+            "$git_evidence" \
+            "$ddev_metadata_state" \
+            "$generated_display" \
+            "$class"
+    done <<<"$registered_records"
+fi
+
+printf '\n%s\n' '===== DDEV DISCOVERED PROJECTS ====='
+
+if [[ -d "$PROJECTS_DIR" ]]; then
+    while IFS= read -r config; do
+        root="${config%/.ddev/config.yaml}"
+
+        if jq -e \
+            --arg root "$root" \
+            '.raw[]? | select(.approot == $root)' \
+            >/dev/null 2>&1 <<<"$registry_json"
+        then
+            continue
+        fi
+
+        name="$(
+            awk '
+                /^[[:space:]]*name:[[:space:]]*/ {
+                    sub(/^[[:space:]]*name:[[:space:]]*/, "")
+                    gsub(/^["'\'']|["'\'']$/, "")
+                    print
+                    exit
+                }
+            ' "$config"
+        )"
+
+        if [[ -z "$name" ]]; then
+            name="${root##*/}"
+        fi
+
+        generated="$(generated_approots "$root")"
+        generated_display="$(join_lines "$generated")"
+        ddev_metadata_state="$(metadata_state "$root" "$generated")"
+        git_evidence="$(git_state "$root")"
+
+        ((discovered_unregistered_count += 1))
+        ((inactive_protected_count += 1))
+
+        printf 'PROJECT=%s|DDEV_STATUS=UNREGISTERED|TYPE=UNKNOWN|APPROOT=%s|REGISTRY_STATE=UNREGISTERED|SOURCE_STATE=PRESENT|CONFIG_STATE=PRESENT|GIT_STATE=%s|DDEV_METADATA_STATE=%s|GENERATED_APPROOT=%s|CLASS=INACTIVE_PROTECTED\n' \
+            "$name" \
+            "$root" \
+            "$git_evidence" \
+            "$ddev_metadata_state" \
+            "$generated_display"
+    done < <(
+        find "$PROJECTS_DIR" \
+            -type f \
+            -path '*/.ddev/config.yaml' \
+            -print 2>/dev/null |
+            sort
+    )
+fi
+
+printf '\n%s\n' '===== DDEV AUDIT RESULT ====='
+printf 'DISCOVERED_UNREGISTERED_COUNT=%d\n' "$discovered_unregistered_count"
+printf 'ACTIVE_COUNT=%d\n' "$active_count"
+printf 'INACTIVE_PROTECTED_COUNT=%d\n' "$inactive_protected_count"
+printf 'STALE_CANDIDATE_COUNT=%d\n' "$stale_candidate_count"
+printf 'STALE_CONFIRMED_COUNT=0\n'
+printf 'UNKNOWN_COUNT=%d\n' "$unknown_count"
+printf 'AUTOMATIC_DELETION=NO\n'

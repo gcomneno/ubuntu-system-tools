@@ -8,7 +8,7 @@ BINDIR ?= $(PREFIX)/bin
 FORCE ?= 0
 DISTDIR ?= $(REPO_ROOT)/dist
 
-TOOLS := bin/hdd_cleanup bin/security-health bin/security-clamav-scan bin/weekly-health bin/who-uses bin/printer-doctor bin/garbage-collector bin/storage-check bin/bulk-epub-to-azw3 bin/bulk-ebook-convert bin/pdf2epub bin/safe-uninstall bin/audio-transcribe bin/kernel-health
+TOOLS := bin/hdd_cleanup bin/security-health bin/security-clamav-scan bin/weekly-health bin/who-uses bin/printer-doctor bin/garbage-collector bin/storage-check bin/storage-docker-audit bin/storage-ddev-audit bin/bulk-epub-to-azw3 bin/bulk-ebook-convert bin/pdf2epub bin/safe-uninstall bin/audio-transcribe bin/kernel-health
 
 .PHONY: \
 	init-config \
@@ -148,6 +148,8 @@ check:
 	tests/selftest_printer_doctor.sh
 	tests/selftest_garbage_collector.sh
 	tests/selftest_storage_check.sh
+	tests/selftest_storage_docker_audit.sh
+	tests/selftest_storage_ddev_audit.sh
 	tests/selftest_bulk_epub_to_azw3.sh
 	tests/selftest_kernel_health.sh
 	tests/selftest_pdf2epub.sh
