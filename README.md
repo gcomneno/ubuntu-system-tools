@@ -137,6 +137,7 @@ storage-check --checkpoint "$HOME/.cache/ubuntu-system-tools/storage.env"
 storage-check --docker --ddev
 storage-cleanup image IMAGE_REF_OR_ID
 storage-cleanup volume VOLUME_NAME
+storage-cleanup-proposal
 ```
 
 Diagnose a CUPS printer queue:
@@ -274,6 +275,43 @@ Supported operations:
 The tool does not run prune commands, remove containers, clear BuildKit cache,
 perform DDEV deletion, invoke `sudo`, or infer mutation authority from an audit
 classification.
+
+### `storage-cleanup-proposal`
+
+`storage-cleanup-proposal` is a read-only bridge between Docker audit evidence
+and explicit human review. It consumes only Docker `STALE_CANDIDATE` image and
+volume records and produces a deterministic proposal manifest.
+
+The proposal layer does not grant deletion authority:
+
+    STALE_CANDIDATE != STALE_CONFIRMED
+    PROPOSAL != AUTHORITY
+
+For image candidates, the proposal uses the immutable Docker image ID rather
+than a mutable tag. Volume candidates use the exact volume name.
+
+Each proposal includes only a preview command such as:
+
+    storage-cleanup image IMAGE_ID
+    storage-cleanup volume VOLUME_NAME
+
+The proposal tool never emits `--apply`, never performs Docker or DDEV mutation,
+never proposes BuildKit cache, and fails closed unless its Docker audit source
+explicitly reports both `STALE_CONFIRMED_COUNT=0` and
+`AUTOMATIC_DELETION=NO`.
+
+Its manifest always reports:
+
+    REVIEW_REQUIRED=YES
+    AUTHORITY=NO
+    AUTOMATIC_DELETION=NO
+
+The tool runs as the current user, never invokes `sudo`, and requires the
+`storage-docker-audit` helper plus standard `sort`, `awk`, and `grep` commands.
+The delegated audit requires the user's normal Docker access.
+
+Local Docker references and volume names may appear in diagnostic output, so
+proposal output should be reviewed before publication.
 
 
 Read-only storage health and growth attribution for the local Ubuntu host.

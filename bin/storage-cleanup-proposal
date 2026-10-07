@@ -1,0 +1,356 @@
+#!/usr/bin/env bash
+
+set -Eeuo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+STORAGE_DOCKER_AUDIT_BIN="${STORAGE_DOCKER_AUDIT_BIN:-$SCRIPT_DIR/storage-docker-audit}"
+
+usage() {
+    cat <<'EOF'
+storage-cleanup-proposal — read-only Docker cleanup proposal manifest
+
+Usage:
+  storage-cleanup-proposal
+  storage-cleanup-proposal --help
+
+Purpose:
+  Convert Docker STALE_CANDIDATE image and volume evidence into an explicit,
+  deterministic review manifest.
+
+Authority:
+  A proposal is not deletion authority.
+  STALE_CANDIDATE is not STALE_CONFIRMED.
+  The tool never emits or executes --apply.
+
+Proposal targets:
+  Images use the exact immutable Docker image ID.
+  Volumes use the exact Docker volume name.
+
+Privileges:
+  Runs as the current user. No root privileges are required and sudo is never
+  invoked internally. The delegated Docker audit requires normal Docker access.
+
+Dependencies:
+  storage-docker-audit, sort, awk, and grep.
+
+Safety:
+  - read-only
+  - no Docker mutation
+  - no prune commands
+  - no DDEV mutation
+  - ACTIVE, INACTIVE_PROTECTED, and UNKNOWN artifacts are never proposed
+  - contradictory candidate evidence fails closed
+  - duplicate exact targets are emitted once
+  - REVIEW_REQUIRED is always YES
+  - AUTHORITY is always NO
+  - AUTOMATIC_DELETION is always NO
+
+Output sensitivity:
+  Docker image references and volume names originate from local diagnostic
+  state. Review output before publishing it.
+
+Exit status:
+  0  Proposal manifest generated successfully.
+  2  Invalid invocation, malformed audit evidence, missing dependency,
+     or Docker audit failure.
+EOF
+}
+
+die() {
+    printf 'ERROR=%s\n' "$1" >&2
+    printf 'REVIEW_REQUIRED=YES\n' >&2
+    printf 'AUTHORITY=NO\n' >&2
+    printf 'AUTOMATIC_DELETION=NO\n' >&2
+    exit 2
+}
+
+require_command() {
+    local command_name="$1"
+
+    command -v -- "$command_name" >/dev/null 2>&1 ||
+        die "missing_dependency:$command_name"
+}
+
+validate_image_id() {
+    local image_id="$1"
+
+    [[ "$image_id" =~ ^sha256:[0-9a-f]{64}$ ]] ||
+        die "invalid_candidate_image_id:$image_id"
+}
+
+validate_volume_name() {
+    local volume_name="$1"
+
+    [[ "$volume_name" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]+$ ]] ||
+        die "invalid_candidate_volume_name:$volume_name"
+}
+
+validate_zero_refs() {
+    local target_type="$1"
+    local target="$2"
+    local running_refs="$3"
+    local container_refs="$4"
+
+    [[ "$running_refs" =~ ^[0-9]+$ ]] ||
+        die "invalid_running_refs:$target_type:$target"
+
+    [[ "$container_refs" =~ ^[0-9]+$ ]] ||
+        die "invalid_container_refs:$target_type:$target"
+
+    (( running_refs == 0 )) ||
+        die "contradictory_running_reference:$target_type:$target"
+
+    (( container_refs == 0 )) ||
+        die "contradictory_container_reference:$target_type:$target"
+}
+
+proposal_image_record() {
+    local line="$1"
+    local type_field=""
+    local id_field=""
+    local ref_field=""
+    local size_field=""
+    local running_field=""
+    local container_field=""
+    local class_field=""
+    local extra_field=""
+    local image_id=""
+    local image_ref=""
+    local size_bytes=""
+    local running_refs=""
+    local container_refs=""
+
+    IFS='|' read -r \
+        type_field \
+        id_field \
+        ref_field \
+        size_field \
+        running_field \
+        container_field \
+        class_field \
+        extra_field <<<"$line"
+
+    [[ -z "$extra_field" ]] ||
+        die "malformed_image_candidate_record"
+
+    [[ "$type_field" == "TYPE=IMAGE" ]] ||
+        die "malformed_image_candidate_record"
+
+    [[ "$class_field" == "CLASS=STALE_CANDIDATE" ]] ||
+        die "unexpected_image_candidate_class"
+
+    image_id="${id_field#ID=}"
+    image_ref="${ref_field#REF=}"
+    size_bytes="${size_field#SIZE_BYTES=}"
+    running_refs="${running_field#RUNNING_REFS=}"
+    container_refs="${container_field#CONTAINER_REFS=}"
+
+    [[ "$id_field" == ID=* ]] ||
+        die "malformed_image_candidate_record"
+
+    [[ "$ref_field" == REF=* ]] ||
+        die "malformed_image_candidate_record"
+
+    [[ "$size_field" == SIZE_BYTES=* ]] ||
+        die "malformed_image_candidate_record"
+
+    [[ "$running_field" == RUNNING_REFS=* ]] ||
+        die "malformed_image_candidate_record"
+
+    [[ "$container_field" == CONTAINER_REFS=* ]] ||
+        die "malformed_image_candidate_record"
+
+    validate_image_id "$image_id"
+    validate_zero_refs "IMAGE" "$image_id" "$running_refs" "$container_refs"
+
+    [[ "$size_bytes" =~ ^[0-9]+$ ]] ||
+        die "invalid_candidate_image_size:$image_id"
+
+    printf '%s\t%s\t%s\t%s\t%s\n' \
+        "IMAGE" \
+        "$image_id" \
+        "$image_ref" \
+        "$size_bytes" \
+        "storage-cleanup image $image_id"
+}
+
+proposal_volume_record() {
+    local line="$1"
+    local type_field=""
+    local name_field=""
+    local driver_field=""
+    local running_field=""
+    local container_field=""
+    local class_field=""
+    local extra_field=""
+    local volume_name=""
+    local driver=""
+    local running_refs=""
+    local container_refs=""
+
+    IFS='|' read -r \
+        type_field \
+        name_field \
+        driver_field \
+        running_field \
+        container_field \
+        class_field \
+        extra_field <<<"$line"
+
+    [[ -z "$extra_field" ]] ||
+        die "malformed_volume_candidate_record"
+
+    [[ "$type_field" == "TYPE=VOLUME" ]] ||
+        die "malformed_volume_candidate_record"
+
+    [[ "$class_field" == "CLASS=STALE_CANDIDATE" ]] ||
+        die "unexpected_volume_candidate_class"
+
+    volume_name="${name_field#NAME=}"
+    driver="${driver_field#DRIVER=}"
+    running_refs="${running_field#RUNNING_REFS=}"
+    container_refs="${container_field#CONTAINER_REFS=}"
+
+    [[ "$name_field" == NAME=* ]] ||
+        die "malformed_volume_candidate_record"
+
+    [[ "$driver_field" == DRIVER=* ]] ||
+        die "malformed_volume_candidate_record"
+
+    [[ "$running_field" == RUNNING_REFS=* ]] ||
+        die "malformed_volume_candidate_record"
+
+    [[ "$container_field" == CONTAINER_REFS=* ]] ||
+        die "malformed_volume_candidate_record"
+
+    validate_volume_name "$volume_name"
+    validate_zero_refs "VOLUME" "$volume_name" "$running_refs" "$container_refs"
+
+    printf '%s\t%s\t%s\t%s\t%s\n' \
+        "VOLUME" \
+        "$volume_name" \
+        "$driver" \
+        "UNAVAILABLE" \
+        "storage-cleanup volume $volume_name"
+}
+
+main() {
+    local audit_output=""
+    local line=""
+    local record=""
+    local records=""
+    local unique_records=""
+    local type=""
+    local target=""
+    local provenance=""
+    local size_bytes=""
+    local preview_command=""
+    local proposal_count=0
+    local image_count=0
+    local volume_count=0
+
+    if (( $# > 1 )); then
+        die "invalid_invocation"
+    fi
+
+    if (( $# == 1 )); then
+        case "$1" in
+            -h|--help)
+                usage
+                return 0
+                ;;
+            *)
+                die "unknown_option:$1"
+                ;;
+        esac
+    fi
+
+    require_command sort
+    require_command awk
+    require_command grep
+
+    [[ -x "$STORAGE_DOCKER_AUDIT_BIN" ]] ||
+        die "docker_audit_not_executable:$STORAGE_DOCKER_AUDIT_BIN"
+
+    if ! audit_output="$("$STORAGE_DOCKER_AUDIT_BIN" 2>&1)"; then
+        printf '%s\n' "$audit_output" >&2
+        die "docker_audit_failed"
+    fi
+
+    grep -Fxq 'STALE_CONFIRMED_COUNT=0' <<<"$audit_output" ||
+        die "docker_audit_contract_missing:STALE_CONFIRMED_COUNT=0"
+
+    grep -Fxq 'AUTOMATIC_DELETION=NO' <<<"$audit_output" ||
+        die "docker_audit_contract_missing:AUTOMATIC_DELETION=NO"
+
+    while IFS= read -r line; do
+        case "$line" in
+            TYPE=IMAGE*\|CLASS=STALE_CANDIDATE)
+                record="$(proposal_image_record "$line")"
+                records+="${record}"$'\n'
+                ;;
+            TYPE=VOLUME*\|CLASS=STALE_CANDIDATE)
+                record="$(proposal_volume_record "$line")"
+                records+="${record}"$'\n'
+                ;;
+        esac
+    done <<<"$audit_output"
+
+    unique_records="$(
+        printf '%s' "$records" |
+            awk 'NF' |
+            LC_ALL=C sort -t $'\t' -k1,1 -k2,2 -u
+    )"
+
+    printf '%s\n' '===== STORAGE CLEANUP PROPOSAL ====='
+    printf 'SOURCE=storage-docker-audit\n'
+    printf 'PROPOSAL_SCOPE=DOCKER_IMAGE_VOLUME\n'
+    printf 'SOURCE_CLASS=STALE_CANDIDATE\n'
+    printf 'STALE_CONFIRMED=NO\n'
+    printf 'REVIEW_REQUIRED=YES\n'
+    printf 'AUTHORITY=NO\n'
+
+    if [[ -n "$unique_records" ]]; then
+        while IFS=$'\t' read -r \
+            type \
+            target \
+            provenance \
+            size_bytes \
+            preview_command
+        do
+            [[ -n "$type" ]] || continue
+
+            proposal_count=$((proposal_count + 1))
+
+            case "$type" in
+                IMAGE)
+                    image_count=$((image_count + 1))
+                    printf 'PROPOSAL|TYPE=IMAGE|TARGET=%s|SOURCE_REF=%s|SIZE_BYTES=%s|SOURCE_CLASS=STALE_CANDIDATE|AUTHORITY=NO|PREVIEW_COMMAND=%s\n' \
+                        "$target" \
+                        "$provenance" \
+                        "$size_bytes" \
+                        "$preview_command"
+                    ;;
+                VOLUME)
+                    volume_count=$((volume_count + 1))
+                    printf 'PROPOSAL|TYPE=VOLUME|TARGET=%s|DRIVER=%s|SOURCE_CLASS=STALE_CANDIDATE|AUTHORITY=NO|PREVIEW_COMMAND=%s\n' \
+                        "$target" \
+                        "$provenance" \
+                        "$preview_command"
+                    ;;
+                *)
+                    die "unexpected_proposal_type:$type"
+                    ;;
+            esac
+        done <<<"$unique_records"
+    fi
+
+    printf 'PROPOSAL_COUNT=%d\n' "$proposal_count"
+    printf 'IMAGE_PROPOSAL_COUNT=%d\n' "$image_count"
+    printf 'VOLUME_PROPOSAL_COUNT=%d\n' "$volume_count"
+    printf 'REVIEW_REQUIRED=YES\n'
+    printf 'AUTHORITY=NO\n'
+    printf 'AUTOMATIC_DELETION=NO\n'
+}
+
+main "$@"
