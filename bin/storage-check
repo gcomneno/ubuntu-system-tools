@@ -1,0 +1,448 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+IFS=$'\n\t'
+
+PROGRAM_NAME="$(basename -- "$0")"
+
+PROJECTS_DIR="${PROJECTS_DIR:-$HOME/Progetti}"
+STORAGE_ROOT_WARN_PERCENT="${STORAGE_ROOT_WARN_PERCENT:-85}"
+STORAGE_PROJECT_ELEPHANT_MIN_BYTES="${STORAGE_PROJECT_ELEPHANT_MIN_BYTES:-1073741824}"
+STORAGE_PROJECT_ELEPHANT_MAX_DEPTH="${STORAGE_PROJECT_ELEPHANT_MAX_DEPTH:-2}"
+
+CHECKPOINT_FILE=""
+SAVE_CHECKPOINT_FILE=""
+
+fail() {
+  printf '%s: error: %s\n' "$PROGRAM_NAME" "$*" >&2
+  exit 2
+}
+
+usage() {
+  cat <<'USAGE'
+NAME
+  storage-check - read-only storage health and growth attribution
+
+SYNOPSIS
+  storage-check [options]
+
+OPTIONS
+  --projects-dir PATH
+      Project root to inspect for large consumers.
+      Default: $PROJECTS_DIR or $HOME/Progetti
+
+  --checkpoint PATH
+      Compare the current snapshot with an existing checkpoint.
+
+  --save-checkpoint PATH
+      Write the current snapshot to PATH after inspection.
+
+  --root-warn-percent N
+      Root filesystem usage percentage considered a finding.
+      Default: $STORAGE_ROOT_WARN_PERCENT or 85
+
+  --elephant-min-bytes N
+      Minimum project size reported as an elephant.
+      Default: $STORAGE_PROJECT_ELEPHANT_MIN_BYTES or 1073741824
+
+  --elephant-max-depth N
+      Maximum depth below --projects-dir considered for elephants.
+      Default: $STORAGE_PROJECT_ELEPHANT_MAX_DEPTH or 2
+
+  -h, --help
+      Show this help.
+
+SAFETY
+  Inspection is read-only.
+
+  --save-checkpoint may create or replace only the explicitly selected
+  checkpoint file. It does not modify inspected filesystems or projects.
+
+EXIT CODES
+  0  Inspection completed and root usage is below warning threshold
+  1  Inspection completed and root usage reached warning threshold
+  2  Invalid input, malformed checkpoint, or operational failure
+USAGE
+}
+
+require_uint() {
+  local name="$1"
+  local value="$2"
+
+  [[ "$value" =~ ^[0-9]+$ ]] || fail "$name must be a non-negative integer"
+}
+
+require_positive_uint() {
+  local name="$1"
+  local value="$2"
+
+  require_uint "$name" "$value"
+  (( value > 0 )) || fail "$name must be greater than zero"
+}
+
+parse_args() {
+  while (($#)); do
+    case "$1" in
+      --projects-dir)
+        (($# >= 2)) || fail "--projects-dir requires a value"
+        PROJECTS_DIR="$2"
+        shift 2
+        ;;
+      --checkpoint)
+        (($# >= 2)) || fail "--checkpoint requires a value"
+        CHECKPOINT_FILE="$2"
+        shift 2
+        ;;
+      --save-checkpoint)
+        (($# >= 2)) || fail "--save-checkpoint requires a value"
+        SAVE_CHECKPOINT_FILE="$2"
+        shift 2
+        ;;
+      --root-warn-percent)
+        (($# >= 2)) || fail "--root-warn-percent requires a value"
+        STORAGE_ROOT_WARN_PERCENT="$2"
+        shift 2
+        ;;
+      --elephant-min-bytes)
+        (($# >= 2)) || fail "--elephant-min-bytes requires a value"
+        STORAGE_PROJECT_ELEPHANT_MIN_BYTES="$2"
+        shift 2
+        ;;
+      --elephant-max-depth)
+        (($# >= 2)) || fail "--elephant-max-depth requires a value"
+        STORAGE_PROJECT_ELEPHANT_MAX_DEPTH="$2"
+        shift 2
+        ;;
+      -h|--help)
+        usage
+        exit 0
+        ;;
+      *)
+        fail "unknown argument: $1"
+        ;;
+    esac
+  done
+
+  require_uint "root warning percentage" "$STORAGE_ROOT_WARN_PERCENT"
+  (( STORAGE_ROOT_WARN_PERCENT <= 100 )) ||
+    fail "root warning percentage must be between 0 and 100"
+
+  require_positive_uint "elephant minimum bytes" "$STORAGE_PROJECT_ELEPHANT_MIN_BYTES"
+  require_positive_uint "elephant max depth" "$STORAGE_PROJECT_ELEPHANT_MAX_DEPTH"
+
+  [[ "$PROJECTS_DIR" == /* ]] ||
+    fail "--projects-dir must be an absolute path"
+
+  if [[ -n "$CHECKPOINT_FILE" ]]; then
+    [[ "$CHECKPOINT_FILE" == /* ]] ||
+      fail "--checkpoint must be an absolute path"
+    [[ -f "$CHECKPOINT_FILE" ]] ||
+      fail "checkpoint does not exist or is not a regular file: $CHECKPOINT_FILE"
+  fi
+
+  if [[ -n "$SAVE_CHECKPOINT_FILE" ]]; then
+    [[ "$SAVE_CHECKPOINT_FILE" == /* ]] ||
+      fail "--save-checkpoint must be an absolute path"
+    [[ "$SAVE_CHECKPOINT_FILE" != "/" ]] ||
+      fail "--save-checkpoint must not be /"
+  fi
+}
+
+need_cmd() {
+  command -v -- "$1" >/dev/null 2>&1 ||
+    fail "missing command: $1"
+}
+
+filesystem_used_bytes() {
+  local path="$1"
+  df -B1 --output=used "$path" | awk 'NR == 2 { print $1 }'
+}
+
+filesystem_available_bytes() {
+  local path="$1"
+  df -B1 --output=avail "$path" | awk 'NR == 2 { print $1 }'
+}
+
+filesystem_usage_percent() {
+  local path="$1"
+  df -P "$path" |
+    awk 'NR == 2 { gsub(/%/, "", $5); print $5 }'
+}
+
+directory_bytes() {
+  local path="$1"
+  local output
+
+  if [[ ! -d "$path" ]]; then
+    printf '%s\n' "UNAVAILABLE"
+    return 0
+  fi
+
+  if output="$(du -sx -B1 -- "$path" 2>/dev/null)"; then
+    awk '{ print $1 }' <<< "$output"
+  else
+    printf '%s\n' "UNAVAILABLE"
+  fi
+}
+
+signed_delta() {
+  local current="$1"
+  local previous="$2"
+  local delta=$(( current - previous ))
+
+  if (( delta > 0 )); then
+    printf '+%s\n' "$delta"
+  else
+    printf '%s\n' "$delta"
+  fi
+}
+
+validate_snapshot_value() {
+  local key="$1"
+  local value="$2"
+
+  case "$key" in
+    ROOT_USED_BYTES|ROOT_AVAILABLE_BYTES|ROOT_USAGE_PERCENT)
+      [[ "$value" =~ ^[0-9]+$ ]] ||
+        fail "malformed checkpoint value for $key"
+      ;;
+    HOME_BYTES|VAR_BYTES|PROJECTS_BYTES)
+      [[ "$value" == "UNAVAILABLE" || "$value" =~ ^[0-9]+$ ]] ||
+        fail "malformed checkpoint value for $key"
+      ;;
+    *)
+      fail "unsupported checkpoint key: $key"
+      ;;
+  esac
+}
+
+load_checkpoint() {
+  local file="$1"
+  local line key value
+
+  declare -gA CHECKPOINT=()
+
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ -n "$line" ]] || continue
+    [[ "$line" != \#* ]] || continue
+    [[ "$line" == *=* ]] || fail "malformed checkpoint line"
+
+    key="${line%%=*}"
+    value="${line#*=}"
+
+    [[ -n "$key" && -n "$value" ]] || fail "malformed checkpoint line"
+
+    case "$key" in
+      ROOT_USED_BYTES|ROOT_AVAILABLE_BYTES|ROOT_USAGE_PERCENT|HOME_BYTES|VAR_BYTES|PROJECTS_BYTES)
+        ;;
+      *)
+        fail "unsupported checkpoint key: $key"
+        ;;
+    esac
+
+    [[ -z "${CHECKPOINT[$key]+x}" ]] ||
+      fail "duplicate checkpoint key: $key"
+
+    validate_snapshot_value "$key" "$value"
+    CHECKPOINT["$key"]="$value"
+  done < "$file"
+
+  local required
+  for required in \
+    ROOT_USED_BYTES \
+    ROOT_AVAILABLE_BYTES \
+    ROOT_USAGE_PERCENT \
+    HOME_BYTES \
+    VAR_BYTES \
+    PROJECTS_BYTES
+  do
+    [[ -n "${CHECKPOINT[$required]+x}" ]] ||
+      fail "checkpoint is missing required key: $required"
+  done
+}
+
+print_delta_if_available() {
+  local label="$1"
+  local current="$2"
+  local previous="$3"
+
+  if [[ "$current" == "UNAVAILABLE" || "$previous" == "UNAVAILABLE" ]]; then
+    printf '%s=UNAVAILABLE\n' "$label"
+  else
+    printf '%s=%s\n' "$label" "$(signed_delta "$current" "$previous")"
+  fi
+}
+
+render_elephants() {
+  printf '\n===== PROJECT ELEPHANTS =====\n'
+  printf 'PROJECTS_DIR=%s\n' "$PROJECTS_DIR"
+  printf 'ELEPHANT_MIN_BYTES=%s\n' "$STORAGE_PROJECT_ELEPHANT_MIN_BYTES"
+  printf 'ELEPHANT_MAX_DEPTH=%s\n' "$STORAGE_PROJECT_ELEPHANT_MAX_DEPTH"
+
+  if [[ ! -d "$PROJECTS_DIR" ]]; then
+    printf 'PROJECTS_DIR_STATUS=UNAVAILABLE\n'
+    printf 'ELEPHANT_COUNT=0\n'
+    return 0
+  fi
+
+  local tmp
+  local count
+
+  tmp="$(mktemp)"
+  trap 'rm -f -- "${tmp:-}"' RETURN
+
+  find "$PROJECTS_DIR" \
+    -mindepth 1 \
+    -maxdepth "$STORAGE_PROJECT_ELEPHANT_MAX_DEPTH" \
+    -type d \
+    -print0 2>/dev/null |
+    while IFS= read -r -d '' path; do
+      local bytes
+      bytes="$(du -sx -B1 -- "$path" 2>/dev/null | awk '{ print $1 }')" || continue
+
+      if [[ "$bytes" =~ ^[0-9]+$ ]] &&
+         (( bytes >= STORAGE_PROJECT_ELEPHANT_MIN_BYTES )); then
+        printf '%s\t%s\n' "$bytes" "$path"
+      fi
+    done |
+    LC_ALL=C sort -nr -k1,1 > "$tmp"
+
+  count="$(wc -l < "$tmp" | tr -d ' ')"
+
+  printf 'PROJECTS_DIR_STATUS=AVAILABLE\n'
+  printf 'ELEPHANT_COUNT=%s\n' "$count"
+
+  if [[ -s "$tmp" ]]; then
+    while IFS=$'\t' read -r bytes path; do
+      printf 'ELEPHANT_BYTES=%s\tPATH=%s\n' "$bytes" "$path"
+    done < "$tmp"
+  fi
+
+  rm -f -- "$tmp"
+  trap - RETURN
+}
+
+save_checkpoint() {
+  local file="$1"
+  local parent
+  local tmp
+
+  parent="$(dirname -- "$file")"
+
+  [[ -d "$parent" ]] ||
+    fail "checkpoint parent directory does not exist: $parent"
+  [[ -w "$parent" ]] ||
+    fail "checkpoint parent directory is not writable: $parent"
+  [[ ! -d "$file" ]] ||
+    fail "checkpoint destination is a directory: $file"
+
+  tmp="$(mktemp "$parent/.storage-check.XXXXXX")"
+
+  {
+    printf '# ubuntu-system-tools storage-check checkpoint v1\n'
+    printf 'ROOT_USED_BYTES=%s\n' "$ROOT_USED_BYTES"
+    printf 'ROOT_AVAILABLE_BYTES=%s\n' "$ROOT_AVAILABLE_BYTES"
+    printf 'ROOT_USAGE_PERCENT=%s\n' "$ROOT_USAGE_PERCENT"
+    printf 'HOME_BYTES=%s\n' "$HOME_BYTES"
+    printf 'VAR_BYTES=%s\n' "$VAR_BYTES"
+    printf 'PROJECTS_BYTES=%s\n' "$PROJECTS_BYTES"
+  } > "$tmp"
+
+  chmod 0600 "$tmp"
+  mv -f -- "$tmp" "$file"
+
+  printf '\n===== CHECKPOINT WRITE =====\n'
+  printf 'CHECKPOINT_WRITE_STATUS=SAVED\n'
+  printf 'CHECKPOINT_FILE=%s\n' "$file"
+}
+
+main() {
+  parse_args "$@"
+
+  need_cmd df
+  need_cmd du
+  need_cmd awk
+  need_cmd find
+  need_cmd sort
+  need_cmd mktemp
+  need_cmd wc
+  need_cmd tr
+  need_cmd dirname
+  need_cmd chmod
+  need_cmd mv
+
+  ROOT_USED_BYTES="$(filesystem_used_bytes /)"
+  ROOT_AVAILABLE_BYTES="$(filesystem_available_bytes /)"
+  ROOT_USAGE_PERCENT="$(filesystem_usage_percent /)"
+  HOME_BYTES="$(directory_bytes "$HOME")"
+  VAR_BYTES="$(directory_bytes /var)"
+  PROJECTS_BYTES="$(directory_bytes "$PROJECTS_DIR")"
+
+  [[ "$ROOT_USED_BYTES" =~ ^[0-9]+$ ]] ||
+    fail "unable to determine root used bytes"
+  [[ "$ROOT_AVAILABLE_BYTES" =~ ^[0-9]+$ ]] ||
+    fail "unable to determine root available bytes"
+  [[ "$ROOT_USAGE_PERCENT" =~ ^[0-9]+$ ]] ||
+    fail "unable to determine root usage percentage"
+
+  printf '===== STORAGE HEALTH =====\n'
+  printf 'ROOT_USED_BYTES=%s\n' "$ROOT_USED_BYTES"
+  printf 'ROOT_AVAILABLE_BYTES=%s\n' "$ROOT_AVAILABLE_BYTES"
+  printf 'ROOT_USAGE_PERCENT=%s\n' "$ROOT_USAGE_PERCENT"
+  printf 'HOME_BYTES=%s\n' "$HOME_BYTES"
+  printf 'VAR_BYTES=%s\n' "$VAR_BYTES"
+  printf 'PROJECTS_BYTES=%s\n' "$PROJECTS_BYTES"
+
+  local final_status=0
+
+  if (( ROOT_USAGE_PERCENT >= STORAGE_ROOT_WARN_PERCENT )); then
+    printf 'STORAGE_HEALTH=WARNING\n'
+    final_status=1
+  else
+    printf 'STORAGE_HEALTH=ACCEPTABLE\n'
+  fi
+
+  printf '\n===== GROWTH =====\n'
+
+  if [[ -n "$CHECKPOINT_FILE" ]]; then
+    load_checkpoint "$CHECKPOINT_FILE"
+
+    printf 'CHECKPOINT_STATUS=AVAILABLE\n'
+    printf 'CHECKPOINT_FILE=%s\n' "$CHECKPOINT_FILE"
+    print_delta_if_available \
+      ROOT_USED_DELTA_BYTES \
+      "$ROOT_USED_BYTES" \
+      "${CHECKPOINT[ROOT_USED_BYTES]}"
+    print_delta_if_available \
+      HOME_DELTA_BYTES \
+      "$HOME_BYTES" \
+      "${CHECKPOINT[HOME_BYTES]}"
+    print_delta_if_available \
+      VAR_DELTA_BYTES \
+      "$VAR_BYTES" \
+      "${CHECKPOINT[VAR_BYTES]}"
+    print_delta_if_available \
+      PROJECTS_DELTA_BYTES \
+      "$PROJECTS_BYTES" \
+      "${CHECKPOINT[PROJECTS_BYTES]}"
+  else
+    printf 'CHECKPOINT_STATUS=NOT_REQUESTED\n'
+  fi
+
+  render_elephants
+
+  if [[ -n "$SAVE_CHECKPOINT_FILE" ]]; then
+    save_checkpoint "$SAVE_CHECKPOINT_FILE"
+  fi
+
+  printf '\n===== RESULT =====\n'
+  if (( final_status == 1 )); then
+    printf 'STORAGE_HEALTH=WARNING\n'
+  else
+    printf 'STORAGE_HEALTH=ACCEPTABLE\n'
+  fi
+  printf 'AUTOMATIC_DELETION=NO\n'
+
+  return "$final_status"
+}
+
+main "$@"

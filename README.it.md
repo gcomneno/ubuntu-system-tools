@@ -92,6 +92,14 @@ Scansione dei file di sviluppo eliminabili senza cancellare nulla:
 garbage-collector ~/Progetti --max-depth 4
 ```
 
+Controllo dello stato storage, dei progetti più grandi e della crescita rispetto a un checkpoint:
+
+```bash
+storage-check
+storage-check --save-checkpoint "$HOME/.cache/ubuntu-system-tools/storage.env"
+storage-check --checkpoint "$HOME/.cache/ubuntu-system-tools/storage.env"
+```
+
 Diagnosi di una coda CUPS:
 
 ```bash
@@ -121,6 +129,33 @@ Individua artefatti rigenerabili come `node_modules/`, `.venv/`, `target/` e cac
 
 ### `garbage-collector`
 Scanner in sola lettura per artefatti eliminabili e spazio recuperabile stimato.
+
+### `storage-check`
+Controllo in sola lettura dello stato storage e dell'attribuzione della crescita.
+
+Caratteristiche:
+
+- stato del filesystem root e spazio disponibile
+- misura di `$HOME`, `/var` e della root progetti quando completamente leggibili
+- individuazione dei progetti più grandi con soglie configurabili
+- confronto con un checkpoint esplicito
+- `--save-checkpoint` scrive esclusivamente il file di checkpoint selezionato
+- le misure incomplete vengono riportate come `UNAVAILABLE`
+- nessuna cancellazione e nessuna cleanup automatica
+
+La root progetti predefinita è `$PROJECTS_DIR`, se definita, altrimenti
+`$HOME/Progetti`.
+
+Override opzionali:
+
+```text
+STORAGE_ROOT_WARN_PERCENT
+STORAGE_PROJECT_ELEPHANT_MIN_BYTES
+STORAGE_PROJECT_ELEPHANT_MAX_DEPTH
+```
+
+Exit status `1`: controllo completato ma soglia di utilizzo root raggiunta.
+Exit status `2`: input non valido, checkpoint malformato o errore operativo.
 
 ### `who-uses`
 Trova dove un pacchetto, una dipendenza, un binario o un identificatore è referenziato.

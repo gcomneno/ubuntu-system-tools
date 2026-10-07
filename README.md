@@ -128,6 +128,14 @@ Audit removable development artifacts without deleting anything:
 garbage-collector ~/Progetti --max-depth 4
 ```
 
+Inspect storage health, project elephants and optional growth against a checkpoint:
+
+``` bash
+storage-check
+storage-check --save-checkpoint "$HOME/.cache/ubuntu-system-tools/storage.env"
+storage-check --checkpoint "$HOME/.cache/ubuntu-system-tools/storage.env"
+```
+
 Diagnose a CUPS printer queue:
 
 ``` bash
@@ -222,6 +230,31 @@ Read-only scanner for removable development artifacts such as `.venv/`,
 -   No deletion mode
 -   Reports size per artifact
 -   Prints total potentially reclaimable space
+
+### `storage-check`
+
+Read-only storage health and growth attribution for the local Ubuntu host.
+
+-   reports root filesystem usage and available space
+-   measures `$HOME`, `/var` and the configured project root when fully readable
+-   reports large project directories using configurable size/depth thresholds
+-   compares the current snapshot with an explicit checkpoint
+-   `--save-checkpoint` writes only the explicitly selected checkpoint file
+-   incomplete directory measurements are reported as `UNAVAILABLE`
+-   never deletes storage or performs automatic cleanup
+
+The default project root is `$PROJECTS_DIR` when set, otherwise `$HOME/Progetti`.
+Optional environment overrides are:
+
+```text
+STORAGE_ROOT_WARN_PERCENT
+STORAGE_PROJECT_ELEPHANT_MIN_BYTES
+STORAGE_PROJECT_ELEPHANT_MAX_DEPTH
+```
+
+Exit status `1` means the inspection completed but root usage reached the
+configured warning threshold. Exit status `2` means invalid input, malformed
+checkpoint or operational failure.
 
 ### `who-uses`
 
