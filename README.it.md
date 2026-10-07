@@ -136,6 +136,8 @@ Scanner in sola lettura per artefatti eliminabili e spazio recuperabile stimato.
 
 ### `storage-check`
 
+Vedi la guida completa del workflow: [Workflow Storage](docs/storage.it.md).
+
 L'orchestratore storage resta read-only per impostazione predefinita. I flag
 opzionali `--docker` e `--ddev` delegano ai tool dedicati
 `storage-docker-audit` e `storage-ddev-audit`. Gli audit classificano

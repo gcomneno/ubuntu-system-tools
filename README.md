@@ -237,6 +237,8 @@ Read-only scanner for removable development artifacts such as `.venv/`,
 
 ### `storage-check`
 
+See the complete bilingual workflow guide: [Storage workflow](docs/storage.md).
+
 The storage orchestrator remains read-only by default. Optional `--docker` and
 `--ddev` flags delegate to the dedicated `storage-docker-audit` and
 `storage-ddev-audit` tools. Those audits classify evidence conservatively as

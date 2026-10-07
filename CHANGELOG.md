@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 ## Unreleased
 
 ### Added
+- Add `storage-check` for read-only storage health, project-size attribution, configurable elephant detection, and explicit growth checkpoints.
+- Add `storage-docker-audit` and `storage-ddev-audit` for conservative Docker/DDEV evidence classification without deletion authority.
+- Add `storage-cleanup`, an exact-target Docker image/volume cleanup workflow with preview-by-default behavior, explicit `--apply`, reference revalidation, and post-mutation verification.
+- Add `storage-cleanup-proposal`, a read-only bridge from Docker `STALE_CANDIDATE` evidence to deterministic human-review manifests without mutation authority.
+- Add bilingual Storage workflow documentation covering the complete evidence → proposal → review → exact-target cleanup → verification model.
 - Add `security-clamav-scan`, a read-only ClamAV scanner with explicit default targets, a full-system warning, per-user locking, and user-controlled logging.
 - Add `weekly-health`, a portable weekly orchestrator for `security-health`, `kernel-health`, and `security-clamav-scan --yes`.
 - Add bilingual documentation for the new ClamAV scanner and weekly orchestration flow.
