@@ -135,6 +135,8 @@ storage-check
 storage-check --save-checkpoint "$HOME/.cache/ubuntu-system-tools/storage.env"
 storage-check --checkpoint "$HOME/.cache/ubuntu-system-tools/storage.env"
 storage-check --docker --ddev
+storage-cleanup image IMAGE_REF_OR_ID
+storage-cleanup volume VOLUME_NAME
 ```
 
 Diagnose a CUPS printer queue:
@@ -246,6 +248,32 @@ references, and BuildKit cache without running prune/remove operations.
 `storage-ddev-audit` correlates the DDEV registry, project roots, Git worktree
 evidence, and generated approot metadata. A stale generated path is reported
 as `DDEV_METADATA_STATE=STALE_PATH`; it is not deletion authority.
+
+### `storage-cleanup`
+
+`storage-cleanup` is a separate safe-by-default controlled-action tool. It does
+not consume `STALE_CANDIDATE` as deletion authority and is intentionally not a
+mutation mode of `storage-check`.
+
+It accepts exactly one Docker image or volume target. The default invocation is
+a read-only preview. Mutation requires the same exact target plus `--apply`.
+
+Before an applied removal it resolves the target, rejects both running and
+stopped container references, and repeats the reference check immediately
+before invoking Docker. After a successful Docker removal it verifies that the
+exact target is absent.
+
+Supported operations:
+
+    storage-cleanup image IMAGE_REF_OR_ID
+    storage-cleanup image IMAGE_REF_OR_ID --apply
+
+    storage-cleanup volume VOLUME_NAME
+    storage-cleanup volume VOLUME_NAME --apply
+
+The tool does not run prune commands, remove containers, clear BuildKit cache,
+perform DDEV deletion, invoke `sudo`, or infer mutation authority from an audit
+classification.
 
 
 Read-only storage health and growth attribution for the local Ubuntu host.

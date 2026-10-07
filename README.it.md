@@ -99,6 +99,8 @@ storage-check
 storage-check --save-checkpoint "$HOME/.cache/ubuntu-system-tools/storage.env"
 storage-check --checkpoint "$HOME/.cache/ubuntu-system-tools/storage.env"
 storage-check --docker --ddev
+storage-cleanup image IMAGE_REF_OR_ID
+storage-cleanup volume VOLUME_NAME
 ```
 
 Diagnosi di una coda CUPS:
@@ -146,6 +148,33 @@ prune/remove. `storage-ddev-audit` correla registry DDEV, root dei progetti,
 evidenza dei worktree Git e metadata approot generati. Un path generato
 obsoleto viene riportato come `DDEV_METADATA_STATE=STALE_PATH`: non costituisce
 autorità alla cancellazione.
+
+### `storage-cleanup`
+
+`storage-cleanup` è un tool controlled-action separato e safe-by-default. Non
+usa `STALE_CANDIDATE` come autorità alla cancellazione e intenzionalmente non è
+una modalità mutante di `storage-check`.
+
+Accetta esattamente un target Docker di tipo immagine o volume. L'invocazione
+predefinita produce soltanto una preview read-only. La mutazione richiede lo
+stesso target esatto più `--apply`.
+
+Prima di una rimozione applicata risolve il target, rifiuta riferimenti da
+container sia running sia stopped e ripete il controllo immediatamente prima
+di invocare Docker. Dopo una rimozione Docker riuscita verifica che il target
+esatto sia effettivamente assente.
+
+Operazioni supportate:
+
+    storage-cleanup image IMAGE_REF_OR_ID
+    storage-cleanup image IMAGE_REF_OR_ID --apply
+
+    storage-cleanup volume VOLUME_NAME
+    storage-cleanup volume VOLUME_NAME --apply
+
+Il tool non esegue prune, non elimina container, non pulisce la cache BuildKit,
+non effettua cancellazioni DDEV, non invoca `sudo` e non deduce autorità alla
+mutazione da una classificazione di audit.
 
 Controllo in sola lettura dello stato storage e dell'attribuzione della crescita.
 

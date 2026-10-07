@@ -1,0 +1,419 @@
+#!/usr/bin/env bash
+
+set -Eeuo pipefail
+
+usage() {
+    cat <<'EOF'
+storage-cleanup — exact-target Docker storage cleanup
+
+Usage:
+  storage-cleanup image IMAGE_REF_OR_ID [--apply]
+  storage-cleanup volume VOLUME_NAME [--apply]
+  storage-cleanup --help
+
+Default behavior:
+  Preview only. No Docker object is removed unless --apply is supplied.
+
+Supported targets:
+  image   Remove one explicitly named Docker image after reference checks.
+  volume  Remove one explicitly named Docker volume after reference checks.
+
+Authority:
+  Discovery or STALE_CANDIDATE classification does not authorize deletion.
+  Mutation authority comes only from an explicit target plus --apply.
+
+Safety:
+  - exact targets only
+  - no wildcards
+  - no prune commands
+  - no container deletion
+  - no BuildKit cache deletion
+  - no DDEV deletion
+  - no hidden sudo
+  - running and stopped container references both refuse mutation
+  - references are checked again immediately before mutation
+  - successful mutation is followed by exact-target absence verification
+  - AUTOMATIC_DELETION is always NO
+
+Exit status:
+  0  Preview completed, or requested mutation completed and verified.
+  2  Invalid input, safety refusal, missing dependency, or Docker failure.
+  3  Mutation command succeeded but post-mutation verification failed.
+EOF
+}
+
+die() {
+    printf 'ERROR=%s\n' "$1" >&2
+    printf 'MUTATION_ATTEMPTED=NO\n' >&2
+    printf 'AUTOMATIC_DELETION=NO\n' >&2
+    exit 2
+}
+
+mutation_fail() {
+    printf 'ERROR=%s\n' "$1" >&2
+    printf 'MUTATION_ATTEMPTED=YES\n' >&2
+    printf 'AUTOMATIC_DELETION=NO\n' >&2
+    exit 2
+}
+
+verify_fail() {
+    printf 'VERIFY_STATUS=FAIL\n' >&2
+    printf 'ERROR=%s\n' "$1" >&2
+    printf 'MUTATION_ATTEMPTED=YES\n' >&2
+    printf 'AUTOMATIC_DELETION=NO\n' >&2
+    exit 3
+}
+
+require_command() {
+    local command_name="$1"
+
+    command -v -- "$command_name" >/dev/null 2>&1 ||
+        die "missing_dependency:$command_name"
+}
+
+count_lines() {
+    local value="$1"
+
+    if [[ -z "$value" ]]; then
+        printf '0\n'
+    else
+        printf '%s\n' "$value" |
+            awk 'NF { count++ } END { print count + 0 }'
+    fi
+}
+
+validate_image_target() {
+    local target="$1"
+
+    [[ -n "$target" ]] ||
+        die "invalid_image_target:<empty>"
+
+    [[ "$target" =~ ^[A-Za-z0-9][A-Za-z0-9._/@:-]*$ ]] ||
+        die "invalid_image_target:$target"
+}
+
+validate_volume_target() {
+    local target="$1"
+
+    [[ -n "$target" ]] ||
+        die "invalid_volume_target:<empty>"
+
+    [[ "$target" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]+$ ]] ||
+        die "invalid_volume_target:$target"
+}
+
+resolve_image_id() {
+    local target="$1"
+    local resolved=""
+
+    resolved="$(
+        docker image inspect \
+            --format '{{.Id}}' \
+            "$target" 2>/dev/null
+    )" || die "image_not_found:$target"
+
+    [[ "$resolved" != *$'\n'* ]] ||
+        die "ambiguous_image_resolution:$target"
+
+    [[ "$resolved" =~ ^sha256:[0-9a-f]{64}$ ]] ||
+        die "invalid_image_resolution:$target"
+
+    printf '%s\n' "$resolved"
+}
+
+resolve_volume_name() {
+    local target="$1"
+    local resolved=""
+
+    resolved="$(
+        docker volume inspect \
+            --format '{{.Name}}' \
+            "$target" 2>/dev/null
+    )" || die "volume_not_found:$target"
+
+    [[ "$resolved" != *$'\n'* ]] ||
+        die "ambiguous_volume_resolution:$target"
+
+    [[ "$resolved" == "$target" ]] ||
+        die "volume_resolution_mismatch:$target"
+
+    printf '%s\n' "$resolved"
+}
+
+image_reference_counts() {
+    local image_id="$1"
+    local running_output=""
+    local all_output=""
+    local running_refs=""
+    local all_refs=""
+
+    running_output="$(
+        docker ps \
+            --filter "ancestor=$image_id" \
+            --format '{{.ID}}' 2>/dev/null
+    )" || die "image_running_reference_check_failed:$image_id"
+
+    all_output="$(
+        docker ps -a \
+            --filter "ancestor=$image_id" \
+            --format '{{.ID}}' 2>/dev/null
+    )" || die "image_reference_check_failed:$image_id"
+
+    running_refs="$(count_lines "$running_output")"
+    all_refs="$(count_lines "$all_output")"
+
+    printf '%s %s\n' "$running_refs" "$all_refs"
+}
+
+volume_reference_counts() {
+    local volume_name="$1"
+    local running_output=""
+    local all_output=""
+    local running_refs=""
+    local all_refs=""
+
+    running_output="$(
+        docker ps \
+            --filter "volume=$volume_name" \
+            --format '{{.ID}}' 2>/dev/null
+    )" || die "volume_running_reference_check_failed:$volume_name"
+
+    all_output="$(
+        docker ps -a \
+            --filter "volume=$volume_name" \
+            --format '{{.ID}}' 2>/dev/null
+    )" || die "volume_reference_check_failed:$volume_name"
+
+    running_refs="$(count_lines "$running_output")"
+    all_refs="$(count_lines "$all_output")"
+
+    printf '%s %s\n' "$running_refs" "$all_refs"
+}
+
+refuse_image_references() {
+    local image_id="$1"
+    local running_refs="$2"
+    local all_refs="$3"
+
+    if (( running_refs > 0 )); then
+        die "image_in_use_by_running_container:$image_id"
+    fi
+
+    if (( all_refs > 0 )); then
+        die "image_referenced_by_container:$image_id"
+    fi
+}
+
+refuse_volume_references() {
+    local volume_name="$1"
+    local running_refs="$2"
+    local all_refs="$3"
+
+    if (( running_refs > 0 )); then
+        die "volume_in_use_by_running_container:$volume_name"
+    fi
+
+    if (( all_refs > 0 )); then
+        die "volume_referenced_by_container:$volume_name"
+    fi
+}
+
+verify_image_absent() {
+    local image_id="$1"
+    local inventory=""
+
+    inventory="$(
+        docker image ls             --no-trunc             --format '{{.ID}}' 2>/dev/null
+    )" || verify_fail "image_verification_failed:$image_id"
+
+    if grep -Fxq -- "$image_id" <<<"$inventory"; then
+        verify_fail "image_still_present:$image_id"
+    fi
+}
+
+verify_volume_absent() {
+    local volume_name="$1"
+    local inventory=""
+
+    inventory="$(
+        docker volume ls             --format '{{.Name}}' 2>/dev/null
+    )" || verify_fail "volume_verification_failed:$volume_name"
+
+    if grep -Fxq -- "$volume_name" <<<"$inventory"; then
+        verify_fail "volume_still_present:$volume_name"
+    fi
+}
+
+cleanup_image() {
+    local target="$1"
+    local apply="$2"
+    local image_id=""
+    local counts=""
+    local running_refs=""
+    local all_refs=""
+
+    validate_image_target "$target"
+    image_id="$(resolve_image_id "$target")"
+
+    counts="$(image_reference_counts "$image_id")"
+    read -r running_refs all_refs <<<"$counts"
+
+    printf '%s\n' '===== STORAGE CLEANUP PLAN ====='
+    printf 'MODE=%s\n' "$([[ "$apply" -eq 1 ]] && printf APPLY || printf PREVIEW)"
+    printf 'TARGET_TYPE=IMAGE\n'
+    printf 'TARGET_REQUEST=%s\n' "$target"
+    printf 'TARGET_ID=%s\n' "$image_id"
+    printf 'RUNNING_REFS=%s\n' "$running_refs"
+    printf 'CONTAINER_REFS=%s\n' "$all_refs"
+    printf 'PLANNED_COMMAND=docker image rm -- %s\n' "$image_id"
+
+    refuse_image_references "$image_id" "$running_refs" "$all_refs"
+
+    if (( ! apply )); then
+        printf 'VERIFY_STATUS=NOT_RUN\n'
+        printf 'MUTATION_ATTEMPTED=NO\n'
+        printf 'AUTOMATIC_DELETION=NO\n'
+        return 0
+    fi
+
+    counts="$(image_reference_counts "$image_id")"
+    read -r running_refs all_refs <<<"$counts"
+
+    printf '%s\n' '===== PRE-MUTATION REVALIDATION ====='
+    printf 'REVALIDATION_RUNNING_REFS=%s\n' "$running_refs"
+    printf 'REVALIDATION_CONTAINER_REFS=%s\n' "$all_refs"
+
+    refuse_image_references "$image_id" "$running_refs" "$all_refs"
+
+    printf '%s\n' '===== MUTATION ====='
+    printf 'MUTATION_COMMAND=docker image rm -- %s\n' "$image_id"
+
+    if ! docker image rm -- "$image_id"; then
+        mutation_fail "image_remove_failed:$image_id"
+    fi
+
+    printf '%s\n' '===== POST-MUTATION VERIFY ====='
+
+    verify_image_absent "$image_id"
+
+    printf 'VERIFY_STATUS=PASS\n'
+    printf 'MUTATION_ATTEMPTED=YES\n'
+    printf 'AUTOMATIC_DELETION=NO\n'
+}
+
+cleanup_volume() {
+    local target="$1"
+    local apply="$2"
+    local volume_name=""
+    local counts=""
+    local running_refs=""
+    local all_refs=""
+
+    validate_volume_target "$target"
+    volume_name="$(resolve_volume_name "$target")"
+
+    counts="$(volume_reference_counts "$volume_name")"
+    read -r running_refs all_refs <<<"$counts"
+
+    printf '%s\n' '===== STORAGE CLEANUP PLAN ====='
+    printf 'MODE=%s\n' "$([[ "$apply" -eq 1 ]] && printf APPLY || printf PREVIEW)"
+    printf 'TARGET_TYPE=VOLUME\n'
+    printf 'TARGET_REQUEST=%s\n' "$target"
+    printf 'TARGET_NAME=%s\n' "$volume_name"
+    printf 'RUNNING_REFS=%s\n' "$running_refs"
+    printf 'CONTAINER_REFS=%s\n' "$all_refs"
+    printf 'PLANNED_COMMAND=docker volume rm -- %s\n' "$volume_name"
+
+    refuse_volume_references "$volume_name" "$running_refs" "$all_refs"
+
+    if (( ! apply )); then
+        printf 'VERIFY_STATUS=NOT_RUN\n'
+        printf 'MUTATION_ATTEMPTED=NO\n'
+        printf 'AUTOMATIC_DELETION=NO\n'
+        return 0
+    fi
+
+    counts="$(volume_reference_counts "$volume_name")"
+    read -r running_refs all_refs <<<"$counts"
+
+    printf '%s\n' '===== PRE-MUTATION REVALIDATION ====='
+    printf 'REVALIDATION_RUNNING_REFS=%s\n' "$running_refs"
+    printf 'REVALIDATION_CONTAINER_REFS=%s\n' "$all_refs"
+
+    refuse_volume_references "$volume_name" "$running_refs" "$all_refs"
+
+    printf '%s\n' '===== MUTATION ====='
+    printf 'MUTATION_COMMAND=docker volume rm -- %s\n' "$volume_name"
+
+    if ! docker volume rm -- "$volume_name"; then
+        mutation_fail "volume_remove_failed:$volume_name"
+    fi
+
+    printf '%s\n' '===== POST-MUTATION VERIFY ====='
+
+    verify_volume_absent "$volume_name"
+
+    printf 'VERIFY_STATUS=PASS\n'
+    printf 'MUTATION_ATTEMPTED=YES\n'
+    printf 'AUTOMATIC_DELETION=NO\n'
+}
+
+main() {
+    local action="${1:-}"
+    local target=""
+    local apply=0
+
+    if [[ "$action" == "-h" || "$action" == "--help" ]]; then
+        usage
+        return 0
+    fi
+
+    case "$action" in
+        image|volume)
+            ;;
+        *)
+            usage >&2
+            return 2
+            ;;
+    esac
+
+    shift
+
+    (( $# >= 1 )) || die "${action}_target_required"
+
+    target="$1"
+    shift
+
+    while (( $# > 0 )); do
+        case "$1" in
+            --apply)
+                (( apply == 0 )) ||
+                    die "duplicate_option:--apply"
+                apply=1
+                ;;
+            *)
+                die "unknown_option:$1"
+                ;;
+        esac
+        shift
+    done
+
+    require_command docker
+    require_command awk
+    require_command grep
+
+    if ! docker version --format '{{.Server.Version}}' >/dev/null 2>&1; then
+        die "docker_unavailable"
+    fi
+
+    case "$action" in
+        image)
+            cleanup_image "$target" "$apply"
+            ;;
+        volume)
+            cleanup_volume "$target" "$apply"
+            ;;
+    esac
+}
+
+main "$@"
